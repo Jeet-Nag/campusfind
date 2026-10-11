@@ -365,6 +365,207 @@ async function runProviderAcceptanceTests() {
   );
   testAssert(raceLogRows.length === 1, 'Exactly one successful transition exists in DB logs after race (Requirement 30)');
 
+  console.log('\n--- 6b. IN-TRANSACTION PROVIDER ROLE & STATUS RE-VALIDATION (PHASE 2F REGRESSION) ---');
+
+  // Capture original provider2 state before any mutation
+  const { rows: origUserRows } = await pool.query<{ role: string; is_active: boolean }>(
+    'SELECT role, is_active FROM users WHERE id = $1',
+    [provider2Id]
+  );
+  testAssert(origUserRows.length === 1, 'Provider 2 user row exists before regression tests');
+  const origRole = origUserRows[0].role;
+  const origIsActive = origUserRows[0].is_active;
+
+  // Test 6b.1: Demoted provider receives 403 and cannot accept booking
+  const demoteKey = `accept-test-demote-${Date.now()}`;
+  const { rows: demoteRows } = await pool.query<{ id: string }>(
+    `INSERT INTO bookings (idempotency_key, customer_id, category_id, area_locality, text_description, visiting_fee, status)
+     VALUES ($1, $2, 'plumber', 'station-colony', 'Leaking bathroom pipe', 99.00, 'SERVICE_REQUESTED')
+     RETURNING id`,
+    [demoteKey, customerId]
+  );
+  const demoteBookingId = demoteRows[0].id;
+
+  try {
+    // Demote provider2 to customer in the database
+    await pool.query("UPDATE users SET role = 'customer' WHERE id = $1", [provider2Id]);
+
+    const demoteRes = await app.inject({
+      method: 'POST',
+      url: `/api/provider/jobs/${demoteBookingId}/accept`,
+      headers: { authorization: `Bearer ${provider2Token}` },
+    });
+    testAssert(demoteRes.statusCode === 403, 'Demoted provider attempting to accept job receives 403 Forbidden');
+    const demoteBody = JSON.parse(demoteRes.payload);
+    testAssert(demoteBody.error?.code === 'FORBIDDEN', 'Demoted provider error code is FORBIDDEN');
+
+    const { rows: demoteDbRows } = await pool.query<{ status: string; provider_id: string | null }>(
+      'SELECT status, provider_id FROM bookings WHERE id = $1',
+      [demoteBookingId]
+    );
+    testAssert(demoteDbRows[0].status === 'SERVICE_REQUESTED', 'Booking status remains SERVICE_REQUESTED after demoted accept attempt');
+    testAssert(demoteDbRows[0].provider_id === null, 'No provider assigned after demoted accept attempt');
+  } finally {
+    // Restore provider2 to captured original role
+    try {
+      await pool.query('UPDATE users SET role = $1 WHERE id = $2', [origRole, provider2Id]);
+    } catch (restoreErr) {
+      console.error('Failed to restore provider2 role in cleanup:', restoreErr);
+    }
+  }
+
+  // Test 6b.2: Deactivated provider receives 401 or 403 and cannot accept booking
+  const inactiveKey = `accept-test-inactive-${Date.now()}`;
+  const { rows: inactiveRows } = await pool.query<{ id: string }>(
+    `INSERT INTO bookings (idempotency_key, customer_id, category_id, area_locality, text_description, visiting_fee, status)
+     VALUES ($1, $2, 'plumber', 'station-colony', 'Kitchen sink leakage', 99.00, 'SERVICE_REQUESTED')
+     RETURNING id`,
+    [inactiveKey, customerId]
+  );
+  const inactiveBookingId = inactiveRows[0].id;
+
+  try {
+    // Deactivate provider2 in database
+    await pool.query('UPDATE users SET is_active = false WHERE id = $1', [provider2Id]);
+
+    const inactiveRes = await app.inject({
+      method: 'POST',
+      url: `/api/provider/jobs/${inactiveBookingId}/accept`,
+      headers: { authorization: `Bearer ${provider2Token}` },
+    });
+    testAssert(inactiveRes.statusCode === 401 || inactiveRes.statusCode === 403, 'Inactive provider attempting to accept receives 401 or 403');
+
+    const { rows: inactiveDbRows } = await pool.query<{ status: string; provider_id: string | null }>(
+      'SELECT status, provider_id FROM bookings WHERE id = $1',
+      [inactiveBookingId]
+    );
+    testAssert(inactiveDbRows[0].status === 'SERVICE_REQUESTED', 'Booking status remains SERVICE_REQUESTED after inactive accept attempt');
+    testAssert(inactiveDbRows[0].provider_id === null, 'No provider assigned after inactive accept attempt');
+  } finally {
+    // Reactivate provider2 to captured original is_active state
+    try {
+      await pool.query('UPDATE users SET is_active = $1 WHERE id = $2', [origIsActive, provider2Id]);
+    } catch (restoreErr) {
+      console.error('Failed to restore provider2 is_active in cleanup:', restoreErr);
+    }
+  }
+
+  // Test 6b.3: In-flight race simulation — holder transaction modifies users row with FOR UPDATE
+  const lockKey = `accept-test-lock-${Date.now()}`;
+  const { rows: lockRows } = await pool.query<{ id: string }>(
+    `INSERT INTO bookings (idempotency_key, customer_id, category_id, area_locality, text_description, visiting_fee, status)
+     VALUES ($1, $2, 'plumber', 'station-colony', 'Burst main pipe', 99.00, 'SERVICE_REQUESTED')
+     RETURNING id`,
+    [lockKey, customerId]
+  );
+  const lockBookingId = lockRows[0].id;
+
+  let holderClient: any = null;
+  let acceptPromise: Promise<any> | null = null;
+
+  try {
+    // Acquire row lock on provider2 and demote inside an open transaction
+    holderClient = await pool.connect();
+    const { rows: pidRows } = await holderClient.query<{ pid: number }>('SELECT pg_backend_pid() AS pid');
+    const holderPid = pidRows[0].pid;
+
+    await holderClient.query('BEGIN');
+    await holderClient.query('SELECT id FROM users WHERE id = $1 FOR UPDATE', [provider2Id]);
+    await holderClient.query("UPDATE users SET role = 'customer' WHERE id = $1", [provider2Id]);
+
+    // Launch accept request asynchronously while row lock is held
+    acceptPromise = app.inject({
+      method: 'POST',
+      url: `/api/provider/jobs/${lockBookingId}/accept`,
+      headers: { authorization: `Bearer ${provider2Token}` },
+    });
+
+    // Explicitly observe that the acceptance request backend PID is waiting on holderPid's lock
+    let blockedPid: number | null = null;
+    const deadline = Date.now() + 2000;
+    while (Date.now() < deadline) {
+      const { rows: blockedRows } = await pool.query<{ pid: number; query: string; wait_event_type: string }>(
+        `SELECT pid, query, wait_event_type
+         FROM pg_stat_activity
+         WHERE $1 = ANY(pg_blocking_pids(pid))
+           AND query ILIKE '%FROM users WHERE id = $1 FOR UPDATE%'
+           AND wait_event_type = 'Lock'`,
+        [holderPid]
+      );
+      if (blockedRows.length > 0) {
+        blockedPid = blockedRows[0].pid;
+        break;
+      }
+      await new Promise((r) => setTimeout(r, 10));
+    }
+
+    testAssert(blockedPid !== null, 'Acceptance request backend PID verified blocked on users row lock held by demotion transaction');
+
+    // Commit the demotion transaction, releasing the users row lock
+    await holderClient.query('COMMIT');
+
+    // Await the unblocked accept request
+    const blockedAcceptRes = await acceptPromise;
+    testAssert(blockedAcceptRes.statusCode === 403, 'Concurrent accept unblocks and returns 403 Forbidden after demotion commits');
+    const blockedBody = JSON.parse(blockedAcceptRes.payload);
+    testAssert(blockedBody.error?.code === 'FORBIDDEN', 'Blocked accept receives FORBIDDEN error code');
+
+    const { rows: lockDbRows } = await pool.query<{ status: string; provider_id: string | null }>(
+      'SELECT status, provider_id FROM bookings WHERE id = $1',
+      [lockBookingId]
+    );
+    testAssert(lockDbRows[0].status === 'SERVICE_REQUESTED', 'Booking remains SERVICE_REQUESTED after concurrent demotion race');
+    testAssert(lockDbRows[0].provider_id === null, 'No provider assigned after concurrent demotion race');
+  } finally {
+    if (holderClient) {
+      try {
+        await holderClient.query('ROLLBACK');
+      } catch {
+        // Swallowed if already committed
+      }
+      try {
+        holderClient.release();
+      } catch (releaseErr) {
+        console.error('Failed to release holderClient in cleanup:', releaseErr);
+      }
+    }
+
+    // Guaranteed restoration of provider2 state to captured original values
+    try {
+      await pool.query('UPDATE users SET role = $1, is_active = $2 WHERE id = $3', [
+        origRole,
+        origIsActive,
+        provider2Id,
+      ]);
+    } catch (restoreErr) {
+      console.error('Failed to restore provider2 state in cleanup:', restoreErr);
+    }
+
+    // Settle pending promise to prevent dangling async activity
+    if (acceptPromise) {
+      try {
+        await acceptPromise;
+      } catch {
+        // Swallowed to prevent masking test failure
+      }
+    }
+  }
+
+  // Normal acceptance verification once restored
+  const normalAcceptRes = await app.inject({
+    method: 'POST',
+    url: `/api/provider/jobs/${lockBookingId}/accept`,
+    headers: { authorization: `Bearer ${provider2Token}` },
+  });
+  testAssert(normalAcceptRes.statusCode === 200, 'Provider 2 accepts job normally once role is restored to provider (200 OK)');
+
+  const { rows: finalDbRows } = await pool.query<{ status: string; provider_id: string }>(
+    'SELECT status, provider_id FROM bookings WHERE id = $1',
+    [lockBookingId]
+  );
+  testAssert(finalDbRows[0].status === 'PROVIDER_ACCEPTED', 'Final booking status is PROVIDER_ACCEPTED');
+  testAssert(finalDbRows[0].provider_id === provider2Id, 'Booking provider_id correctly assigned to Provider 2');
+
   console.log('\n--- 7. Bilingual i18n Key Symmetry Audit for Module 8 ---');
 
   const enKeys = Object.keys(en);

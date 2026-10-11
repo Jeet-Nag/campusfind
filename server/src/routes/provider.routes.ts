@@ -223,6 +223,25 @@ export const providerRoutes: FastifyPluginAsync = async (app: FastifyInstance) =
         return reply.status(404).send(response);
       }
 
+      // 2. Lock and re-validate authenticated provider account to prevent concurrent demotion/deactivation races
+      const userRes = await client.query<{ id: string; role: string; is_active: boolean }>(
+        'SELECT id, role, is_active FROM users WHERE id = $1 FOR UPDATE',
+        [request.user.id]
+      );
+
+      if (userRes.rows.length === 0 || userRes.rows[0].role !== 'provider' || !userRes.rows[0].is_active) {
+        await client.query('ROLLBACK');
+        const response: ApiResponse = {
+          success: false,
+          error: {
+            code: 'FORBIDDEN',
+            messageEn: 'Provider account is inactive or not authorized to accept jobs.',
+            messageHi: 'मिस्त्री खाता निष्क्रिय है या काम स्वीकार करने के लिए अधिकृत नहीं है।',
+          },
+        };
+        return reply.status(403).send(response);
+      }
+
       const existing = checkRes.rows[0];
 
       // 4. Repeated acceptance by the SAME provider (Idempotency guarantee)
