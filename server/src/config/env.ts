@@ -49,10 +49,58 @@ export function createEnvSchema() {
       SUPPORT_WHATSAPP: z.string().default('+919876543210'),
       RP_ID: z.string().default('localhost'),
       RP_NAME: z.string().default('Chandil Home Services'),
-      EXPECTED_ORIGIN: z.string().default('http://localhost:3000'),
+      EXPECTED_ORIGIN: z
+        .string()
+        .default('http://localhost:3000')
+        .refine(
+          (val) => {
+            const origins = val.split(',').map((o) => o.trim()).filter(Boolean);
+            if (origins.length === 0) return false;
+            for (const origin of origins) {
+              if (origin.startsWith('android:apk-key-hash:')) {
+                // Must have a valid base64url SHA-256 fingerprint (43 chars)
+                if (!/^android:apk-key-hash:[A-Za-z0-9_-]{43}$/.test(origin)) {
+                  return false;
+                }
+              } else {
+                try {
+                  const url = new URL(origin);
+                  if (url.protocol !== 'http:' && url.protocol !== 'https:') {
+                    return false;
+                  }
+                } catch {
+                  return false;
+                }
+              }
+            }
+            return true;
+          },
+          {
+            message:
+              'EXPECTED_ORIGIN must contain valid HTTP/HTTPS URLs or android:apk-key-hash:<hash> origins separated by commas.',
+          }
+        ),
     })
     .superRefine((data, ctx) => {
       if (data.NODE_ENV === 'production') {
+        const origins = data.EXPECTED_ORIGIN.split(',').map((o) => o.trim()).filter(Boolean);
+        for (const origin of origins) {
+          if (!origin.startsWith('android:apk-key-hash:')) {
+            try {
+              const url = new URL(origin);
+              if (url.protocol !== 'https:' && url.hostname !== 'localhost' && url.hostname !== '127.0.0.1') {
+                ctx.addIssue({
+                  code: z.ZodIssueCode.custom,
+                  path: ['EXPECTED_ORIGIN'],
+                  message: `Production expected origin "${origin}" must use HTTPS protocol.`,
+                });
+              }
+            } catch {
+              // Handled by field refine
+            }
+          }
+        }
+
         if (!data.JWT_SECRET || data.JWT_SECRET.trim().length === 0) {
           ctx.addIssue({
             code: z.ZodIssueCode.custom,
@@ -108,6 +156,8 @@ export function resolveDatabaseSsl(
   throw new Error(`Invalid DATABASE_SSL value: "${sslOption}". Expected "true" or "false".`);
 }
 
-export function getExpectedOrigins(): string[] {
-  return env.EXPECTED_ORIGIN.split(',').map((o) => o.trim()).filter(Boolean);
+export function getExpectedOrigins(customExpectedOrigin?: string): string[] {
+  const originStr = customExpectedOrigin !== undefined ? customExpectedOrigin : env.EXPECTED_ORIGIN;
+  return originStr.split(',').map((o) => o.trim()).filter(Boolean);
 }
+

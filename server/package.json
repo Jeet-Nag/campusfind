@@ -35,6 +35,7 @@
     "test:worker-onboarding": "tsx tests/worker-onboarding.test.ts",
     "test:worker-frontend": "tsx tests/worker-frontend.test.ts",
     "test:passkey": "tsx tests/passkey.test.ts",
+    "test:passkey-origin": "tsx tests/passkey-origin-verification.test.ts",
     "test:passkey-frontend": "tsx tests/passkey-frontend.test.ts",
     "test:api-routing": "tsx tests/client-api-routing.test.ts",
     "db:migrate": "tsx src/db/migrator.ts",
@@ -43,8 +44,10 @@
     "db:staging:migrate": "tsx scripts/run-staging-migrations.ts"
   },
   "dependencies": {
+    "@devicefarmer/adbkit-apkreader": "^3.2.4",
     "@fastify/cors": "^10.0.2",
     "@fastify/jwt": "^10.2.2",
+    "@fastify/multipart": "^10.1.4",
     "@fastify/static": "^10.1.5",
     "@simplewebauthn/server": "^14.0.3",
     "dotenv": "^16.4.7",

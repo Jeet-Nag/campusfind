@@ -288,8 +288,10 @@ export async function verifyWorkerProvider(providerId) {
         const res = await fetch(`/api/admin/providers/${providerId}/verify`, {
             method: 'POST',
             headers: {
+                'Content-Type': 'application/json',
                 Authorization: `Bearer ${token}`,
             },
+            body: '{}',
         });
         if (res.status === 401) {
             handleSessionExpired();

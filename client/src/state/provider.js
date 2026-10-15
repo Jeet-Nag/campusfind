@@ -195,8 +195,10 @@ export async function acceptJob(jobId) {
         const res = await fetch(`/api/provider/jobs/${jobId}/accept`, {
             method: 'POST',
             headers: {
+                'Content-Type': 'application/json',
                 Authorization: `Bearer ${token}`,
             },
+            body: '{}',
         });
         if (res.status === 401) {
             await logout();
@@ -251,8 +253,10 @@ export async function rejectJob(jobId) {
         const res = await fetch(`/api/provider/jobs/${jobId}/reject`, {
             method: 'POST',
             headers: {
+                'Content-Type': 'application/json',
                 Authorization: `Bearer ${token}`,
             },
+            body: '{}',
         });
         if (res.status === 401) {
             await logout();
@@ -358,8 +362,10 @@ export async function collectCashPayment(jobId) {
         const res = await fetch(`/api/provider/jobs/${jobId}/payment`, {
             method: 'POST',
             headers: {
+                'Content-Type': 'application/json',
                 Authorization: `Bearer ${token}`,
             },
+            body: '{}',
         });
         if (res.status === 401) {
             await logout();

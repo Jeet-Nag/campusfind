@@ -226,8 +226,10 @@ export async function acceptJob(jobId: string): Promise<boolean> {
     const res = await fetch(`/api/provider/jobs/${jobId}/accept`, {
       method: 'POST',
       headers: {
+        'Content-Type': 'application/json',
         Authorization: `Bearer ${token}`,
       },
+      body: '{}',
     });
 
     if (res.status === 401) {
@@ -287,8 +289,10 @@ export async function rejectJob(jobId: string): Promise<boolean> {
     const res = await fetch(`/api/provider/jobs/${jobId}/reject`, {
       method: 'POST',
       headers: {
+        'Content-Type': 'application/json',
         Authorization: `Bearer ${token}`,
       },
+      body: '{}',
     });
 
     if (res.status === 401) {
@@ -403,8 +407,10 @@ export async function collectCashPayment(jobId: string): Promise<boolean> {
     const res = await fetch(`/api/provider/jobs/${jobId}/payment`, {
       method: 'POST',
       headers: {
+        'Content-Type': 'application/json',
         Authorization: `Bearer ${token}`,
       },
+      body: '{}',
     });
 
     if (res.status === 401) {
