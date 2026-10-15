@@ -33,22 +33,32 @@ async function runProviderFeedTests() {
   // Test phone numbers
   const customerPhone = '9800077001';
   const providerPhone = '9800077002';
+  const plumberPhone = '9800077004';
   const adminPhone = '9800077003';
 
   // Cleanup old test fixtures
-  await pool.query('DELETE FROM booking_status_logs WHERE changed_by IN (SELECT id FROM users WHERE phone IN ($1, $2, $3))', [
+  await pool.query('DELETE FROM booking_status_logs WHERE changed_by IN (SELECT id FROM users WHERE phone IN ($1, $2, $3, $4))', [
     customerPhone,
     providerPhone,
+    plumberPhone,
     adminPhone,
   ]);
-  await pool.query('DELETE FROM bookings WHERE customer_id IN (SELECT id FROM users WHERE phone IN ($1, $2, $3))', [
+  await pool.query('DELETE FROM bookings WHERE customer_id IN (SELECT id FROM users WHERE phone IN ($1, $2, $3, $4))', [
     customerPhone,
     providerPhone,
+    plumberPhone,
     adminPhone,
   ]);
-  await pool.query('DELETE FROM users WHERE phone IN ($1, $2, $3)', [
+  await pool.query('DELETE FROM provider_profiles WHERE user_id IN (SELECT id FROM users WHERE phone IN ($1, $2, $3, $4))', [
     customerPhone,
     providerPhone,
+    plumberPhone,
+    adminPhone,
+  ]);
+  await pool.query('DELETE FROM users WHERE phone IN ($1, $2, $3, $4)', [
+    customerPhone,
+    providerPhone,
+    plumberPhone,
     adminPhone,
   ]);
 
@@ -67,6 +77,25 @@ async function runProviderFeedTests() {
   );
   const providerId = provRows[0].id;
 
+  await pool.query(
+    `INSERT INTO provider_profiles (user_id, category_id, service_area, is_available, verification_status)
+     VALUES ($1, 'electrician', 'Chandil', true, 'VERIFIED')`,
+    [providerId]
+  );
+
+  const { rows: plumberRows } = await pool.query<{ id: string }>(
+    `INSERT INTO users (phone, role, full_name, preferred_language, is_active)
+     VALUES ($1, 'provider', 'Dinesh Plumber', 'hi', true) RETURNING id`,
+    [plumberPhone]
+  );
+  const plumberId = plumberRows[0].id;
+
+  await pool.query(
+    `INSERT INTO provider_profiles (user_id, category_id, service_area, is_available, verification_status)
+     VALUES ($1, 'plumber', 'Chandil', true, 'VERIFIED')`,
+    [plumberId]
+  );
+
   const { rows: adminRows } = await pool.query<{ id: string }>(
     `INSERT INTO users (phone, role, full_name, preferred_language, is_active)
      VALUES ($1, 'admin', 'Admin Staff', 'en', true) RETURNING id`,
@@ -77,6 +106,7 @@ async function runProviderFeedTests() {
   // Generate JWT Tokens (token_version defaults to 1)
   const customerToken = app.jwt.sign({ id: customerId, phone: customerPhone, role: 'customer', tokenVersion: 1 });
   const providerToken = app.jwt.sign({ id: providerId, phone: providerPhone, role: 'provider', tokenVersion: 1 });
+  const plumberToken = app.jwt.sign({ id: plumberId, phone: plumberPhone, role: 'provider', tokenVersion: 1 });
   const adminToken = app.jwt.sign({ id: adminId, phone: adminPhone, role: 'admin', tokenVersion: 1 });
 
   console.log('--- 1. RBAC & Authorization on Provider Job Feed ---');
@@ -173,32 +203,43 @@ async function runProviderFeedTests() {
   );
   const b5Id = b5Rows[0].id;
 
-  // Booking 6: SERVICE_REQUESTED, provider_id IS NULL, NEWEST (SHOULD APPEAR FIRST)
+  // Booking 6: SERVICE_REQUESTED, provider_id IS NULL, NEWEST ELECTRICIAN (SHOULD APPEAR FIRST for Electrician)
   const b6Key = `prov-test-b6-${Date.now()}`;
   const { rows: b6Rows } = await pool.query<{ id: string }>(
     `INSERT INTO bookings (idempotency_key, customer_id, category_id, area_locality, landmark, text_description, visiting_fee, status, created_at)
-     VALUES ($1, $2, 'bike-mechanic', 'gangdih', 'Near Kali Mandir', 'Bike clutch wire broken', 99.00, 'SERVICE_REQUESTED', NOW())
+     VALUES ($1, $2, 'electrician', 'gangdih', 'Near Kali Mandir', 'Switchboard spark and wire repair', 99.00, 'SERVICE_REQUESTED', NOW())
      RETURNING id`,
     [b6Key, customerId]
   );
   const b6Id = b6Rows[0].id;
 
-  // Fetch provider job feed
+  // Booking 7: SERVICE_REQUESTED, provider_id IS NULL, PLUMBER (SHOULD APPEAR for Plumber, EXCLUDED for Electrician)
+  const b7Key = `prov-test-b7-${Date.now()}`;
+  const { rows: b7Rows } = await pool.query<{ id: string }>(
+    `INSERT INTO bookings (idempotency_key, customer_id, category_id, area_locality, landmark, text_description, visiting_fee, status, created_at)
+     VALUES ($1, $2, 'plumber', 'station-colony', 'Platform 1 gate', 'Bathroom tap leaking heavily', 99.00, 'SERVICE_REQUESTED', NOW() - INTERVAL '1 minute')
+     RETURNING id`,
+    [b7Key, customerId]
+  );
+  const b7Id = b7Rows[0].id;
+
+  // 2.1 Fetch Electrician job feed (Sunil Mistri)
   const feedRes = await app.inject({
     method: 'GET',
     url: '/api/provider/jobs',
     headers: { authorization: `Bearer ${providerToken}` },
   });
-  testAssert(feedRes.statusCode === 200, 'Provider job feed returns 200 OK');
+  testAssert(feedRes.statusCode === 200, 'Electrician job feed returns 200 OK');
   const feedBody: ApiResponse<ProviderJob[]> = JSON.parse(feedRes.payload);
   const feedJobs = feedBody.data || [];
 
-  // Verifications
-  testAssert(feedJobs.length === 2, `Feed returns exactly 2 available jobs (expected 2, got ${feedJobs.length})`);
+  // Verifications for Electrician
+  testAssert(feedJobs.length === 2, `Feed returns exactly 2 available electrician jobs (expected 2, got ${feedJobs.length})`);
 
   const jobIds = feedJobs.map((j) => j.id);
-  testAssert(jobIds.includes(b1Id), 'Available SERVICE_REQUESTED booking appears (Requirement 4)');
-  testAssert(jobIds.includes(b6Id), 'Newer available SERVICE_REQUESTED booking appears (Requirement 4)');
+  testAssert(jobIds.includes(b1Id), 'Available electrician booking b1 appears (Requirement 4)');
+  testAssert(jobIds.includes(b6Id), 'Newer available electrician booking b6 appears (Requirement 4)');
+  testAssert(!jobIds.includes(b7Id), 'Electrician does NOT see plumber booking b7 (Category Matching Isolation)');
   testAssert(!jobIds.includes(b2Id), 'Booking with provider_id is strictly excluded (Requirement 5)');
   testAssert(!jobIds.includes(b3Id), 'Non-SERVICE_REQUESTED booking is strictly excluded (Requirement 6)');
   testAssert(!jobIds.includes(b4Id), 'Cancelled booking is strictly excluded (Requirement 7)');
@@ -206,6 +247,20 @@ async function runProviderFeedTests() {
 
   // Ordering check: Newest requests first
   testAssert(feedJobs[0].id === b6Id && feedJobs[1].id === b1Id, 'Provider job feed is ordered newest first (Requirement 9)');
+
+  // 2.2 Fetch Plumber job feed (Dinesh Plumber)
+  const plumberFeedRes = await app.inject({
+    method: 'GET',
+    url: '/api/provider/jobs',
+    headers: { authorization: `Bearer ${plumberToken}` },
+  });
+  testAssert(plumberFeedRes.statusCode === 200, 'Plumber job feed returns 200 OK');
+  const plumberFeedBody: ApiResponse<ProviderJob[]> = JSON.parse(plumberFeedRes.payload);
+  const plumberJobs = plumberFeedBody.data || [];
+  testAssert(plumberJobs.length === 1, `Plumber sees exactly 1 available plumber job (expected 1, got ${plumberJobs.length})`);
+  testAssert(plumberJobs[0]?.id === b7Id, 'Plumber sees matching plumber job b7');
+  testAssert(!plumberJobs.some((j) => j.id === b1Id), 'Plumber does NOT see electrician job b1');
+  testAssert(!plumberJobs.some((j) => j.id === b6Id), 'Plumber does NOT see electrician job b6');
 
   console.log('\n--- 3. Customer Data Privacy & Isolation in Job Feed ---');
 
@@ -258,6 +313,30 @@ async function runProviderFeedTests() {
   testAssert(detail.id === b1Id, 'Detail booking ID matches requested ID');
   testAssert(detail.audioUrl === testAudioUrl, 'Audio URL is reused correctly in detail view (Requirement 13)');
   testAssert(!('customerId' in detail) && !('customerPhone' in detail), 'Detail view strictly protects customer privacy');
+
+  // 4.3b Cross-category detail privacy: Plumber cannot inspect Electrician job details
+  const plumberInspectElec = await app.inject({
+    method: 'GET',
+    url: `/api/provider/jobs/${b1Id}`,
+    headers: { authorization: `Bearer ${plumberToken}` },
+  });
+  testAssert(plumberInspectElec.statusCode === 404, 'Plumber receives 404 trying to inspect open Electrician job (Category Privacy)');
+
+  // 4.3c Cross-category detail privacy: Electrician cannot inspect Plumber job details
+  const elecInspectPlumber = await app.inject({
+    method: 'GET',
+    url: `/api/provider/jobs/${b7Id}`,
+    headers: { authorization: `Bearer ${providerToken}` },
+  });
+  testAssert(elecInspectPlumber.statusCode === 404, 'Electrician receives 404 trying to inspect open Plumber job (Category Privacy)');
+
+  // 4.3d Plumber can view permitted Plumber job details
+  const plumberInspectPlumber = await app.inject({
+    method: 'GET',
+    url: `/api/provider/jobs/${b7Id}`,
+    headers: { authorization: `Bearer ${plumberToken}` },
+  });
+  testAssert(plumberInspectPlumber.statusCode === 200, 'Plumber successfully retrieves permitted Plumber job details');
 
   // 4.4 Malformed UUID error handling
   const malformedDetailRes = await app.inject({
@@ -332,6 +411,48 @@ async function runProviderFeedTests() {
   });
   testAssert(custHistoryRes.statusCode === 200, 'Customer navigation and booking history remain fully functional (Requirement 18)');
 
+  console.log('\n--- 7b. Worker Verification & Availability Feed Filtering ---');
+
+  // 7b.1 Pending verification worker gets 403 FORBIDDEN on GET /api/provider/jobs
+  await pool.query("UPDATE provider_profiles SET verification_status = 'PENDING_VERIFICATION' WHERE user_id = $1", [providerId]);
+  const pendingFeedRes = await app.inject({
+    method: 'GET',
+    url: '/api/provider/jobs',
+    headers: { authorization: `Bearer ${providerToken}` },
+  });
+  testAssert(pendingFeedRes.statusCode === 403, 'Pending verification worker receives 403 on job feed');
+  const pendingFeedBody = JSON.parse(pendingFeedRes.payload);
+  testAssert(pendingFeedBody.error?.code === 'FORBIDDEN', 'Pending verification feed error code is FORBIDDEN');
+
+  // 7b.2 Rejected worker gets 403 FORBIDDEN on GET /api/provider/jobs
+  await pool.query("UPDATE provider_profiles SET verification_status = 'REJECTED' WHERE user_id = $1", [providerId]);
+  const rejectedFeedRes = await app.inject({
+    method: 'GET',
+    url: '/api/provider/jobs',
+    headers: { authorization: `Bearer ${providerToken}` },
+  });
+  testAssert(rejectedFeedRes.statusCode === 403, 'Rejected worker receives 403 on job feed');
+  const rejectedFeedBody = JSON.parse(rejectedFeedRes.payload);
+  testAssert(rejectedFeedBody.error?.code === 'FORBIDDEN', 'Rejected worker feed error code is FORBIDDEN');
+
+  // Restore verification_status to VERIFIED
+  await pool.query("UPDATE provider_profiles SET verification_status = 'VERIFIED' WHERE user_id = $1", [providerId]);
+
+  // 7b.3 Unavailable worker (is_available = false) does NOT see open broadcast jobs in feed
+  await pool.query("UPDATE provider_profiles SET is_available = false WHERE user_id = $1", [providerId]);
+  const unavailFeedRes = await app.inject({
+    method: 'GET',
+    url: '/api/provider/jobs',
+    headers: { authorization: `Bearer ${providerToken}` },
+  });
+  testAssert(unavailFeedRes.statusCode === 200, 'Unavailable worker can query job feed without error (200 OK)');
+  const unavailFeedBody = JSON.parse(unavailFeedRes.payload);
+  const unavailJobs = unavailFeedBody.data || [];
+  testAssert(unavailJobs.length === 0, 'Unavailable worker does not see unassigned broadcast jobs in feed');
+
+  // Restore is_available to true
+  await pool.query("UPDATE provider_profiles SET is_available = true WHERE user_id = $1", [providerId]);
+
   console.log('\n--- 8. Bilingual i18n Key Symmetry Audit for Module 7 ---');
 
   const enKeys = Object.keys(en);
@@ -366,14 +487,22 @@ async function runProviderFeedTests() {
 
   // Cleanup test fixtures
   await audioService.deleteAudioFile(filename);
-  await pool.query('DELETE FROM bookings WHERE customer_id IN (SELECT id FROM users WHERE phone IN ($1, $2, $3))', [
+  await pool.query('DELETE FROM bookings WHERE customer_id IN (SELECT id FROM users WHERE phone IN ($1, $2, $3, $4))', [
     customerPhone,
     providerPhone,
+    plumberPhone,
     adminPhone,
   ]);
-  await pool.query('DELETE FROM users WHERE phone IN ($1, $2, $3)', [
+  await pool.query('DELETE FROM provider_profiles WHERE user_id IN (SELECT id FROM users WHERE phone IN ($1, $2, $3, $4))', [
     customerPhone,
     providerPhone,
+    plumberPhone,
+    adminPhone,
+  ]);
+  await pool.query('DELETE FROM users WHERE phone IN ($1, $2, $3, $4)', [
+    customerPhone,
+    providerPhone,
+    plumberPhone,
     adminPhone,
   ]);
 

@@ -38,6 +38,7 @@ export interface Booking {
   finalAmount: number | null;
   paymentMethod: PaymentMethod;
   paymentCollected: boolean;
+  isTest?: boolean;
   
   // Timestamps
   createdAt: string;

@@ -10,7 +10,7 @@ export const providersError = signal<string | null>(null);
 
 // Search & Filter state
 export const providerSearchQuery = signal<string>('');
-export const providerStatusFilter = signal<'all' | 'pending' | 'active' | 'inactive'>('all');
+export const providerStatusFilter = signal<'all' | 'pending' | 'active' | 'inactive' | 'rejected'>('all');
 export const providerCategoryFilter = signal<string>('all');
 
 // Modals & Mutation state
@@ -21,6 +21,12 @@ export const isReviewModalOpen = signal<boolean>(false);
 export const reviewingProvider = signal<AdminProviderView | null>(null);
 export const isVerifyingWorker = signal<boolean>(false);
 export const verifyError = signal<string | null>(null);
+
+// Rejection state
+export const isRejectModalOpen = signal<boolean>(false);
+export const rejectingReason = signal<string>('');
+export const isRejectingWorker = signal<boolean>(false);
+export const rejectError = signal<string | null>(null);
 
 // Document Zoom Viewer state
 export interface ActiveDocumentViewer {
@@ -73,10 +79,12 @@ export const filteredProviders = computed(() => {
     // 1. Status Filter
     if (status === 'pending') {
       if (provider.verificationStatus !== 'PENDING_VERIFICATION') return false;
+    } else if (status === 'rejected') {
+      if (provider.verificationStatus !== 'REJECTED') return false;
     } else if (status === 'active') {
-      if (!provider.isActive || provider.verificationStatus === 'PENDING_VERIFICATION') return false;
+      if (!provider.isActive || provider.verificationStatus === 'PENDING_VERIFICATION' || provider.verificationStatus === 'REJECTED') return false;
     } else if (status === 'inactive') {
-      if (provider.isActive || provider.verificationStatus === 'PENDING_VERIFICATION') return false;
+      if (provider.isActive || provider.verificationStatus === 'PENDING_VERIFICATION' || provider.verificationStatus === 'REJECTED') return false;
     }
 
     // 2. Category Filter
@@ -343,6 +351,93 @@ export async function verifyWorkerProvider(providerId: string): Promise<boolean>
     return false;
   } finally {
     isVerifyingWorker.value = false;
+  }
+}
+
+/**
+ * Open Reject Worker Confirmation modal.
+ */
+export function openRejectModal(provider: AdminProviderView): void {
+  reviewingProvider.value = provider;
+  rejectingReason.value = '';
+  rejectError.value = null;
+  isRejectModalOpen.value = true;
+}
+
+/**
+ * Close Reject Worker Confirmation modal (guarded against in-flight rejection).
+ */
+export function closeRejectModal(): void {
+  if (isRejectingWorker.value) return;
+  isRejectModalOpen.value = false;
+  rejectingReason.value = '';
+  rejectError.value = null;
+}
+
+/**
+ * Reject a worker application via POST /api/admin/providers/:id/reject.
+ * Sets verification_status to 'REJECTED' and records reason.
+ */
+export async function rejectWorkerProvider(providerId: string, reason: string): Promise<boolean> {
+  const token = authToken.value;
+  if (!token || isRejectingWorker.value) return false;
+
+  const trimmedReason = reason.trim();
+  if (!trimmedReason) {
+    rejectError.value = t('admin.reject_reason_required');
+    return false;
+  }
+  if (trimmedReason.length > 500) {
+    rejectError.value =
+      currentLanguage.value === 'hi'
+        ? 'अस्वीकृति का कारण 500 अक्षरों से अधिक नहीं हो सकता।'
+        : 'Rejection reason must not exceed 500 characters.';
+    return false;
+  }
+
+  isRejectingWorker.value = true;
+  rejectError.value = null;
+
+  try {
+    const res = await fetch(`/api/admin/providers/${providerId}/reject`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${token}`,
+      },
+      body: JSON.stringify({ reason: trimmedReason }),
+    });
+
+    if (res.status === 401) {
+      handleSessionExpired();
+      return false;
+    }
+
+    const body: ApiResponse<{ provider: AdminProviderView }> = await res.json();
+
+    if (!res.ok || !body.success || !body.data) {
+      rejectError.value =
+        currentLanguage.value === 'hi'
+          ? body.error?.messageHi || 'अस्वीकृत करने में त्रुटि हुई।'
+          : body.error?.messageEn || 'Error rejecting worker.';
+      return false;
+    }
+
+    // Success: close modals, show toast, refresh provider list
+    isRejectModalOpen.value = false;
+    isReviewModalOpen.value = false;
+    reviewingProvider.value = null;
+    formSuccessMessage.value = t('admin.worker_rejected_success');
+    await fetchAdminProviders();
+    return true;
+  } catch {
+    rejectError.value =
+      currentLanguage.value === 'hi'
+        ? 'नेटवर्क त्रुटि। कृपया पुनः प्रयास करें।'
+        : 'Network error. Please try again.';
+    return false;
+  } finally {
+    isRejectingWorker.value = false;
   }
 }
 

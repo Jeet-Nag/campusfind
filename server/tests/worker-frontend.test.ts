@@ -113,6 +113,11 @@ const {
   aadhaarFront,
   aadhaarBack,
   workerPhoto,
+  rejectionReason,
+  rejectedAt,
+  existingHasFront,
+  existingHasBack,
+  existingHasPhoto,
   isSubmittingWorker,
   workerSubmitError,
   workerSubmitSuccess,
@@ -473,6 +478,290 @@ async function runTests() {
   testAssert(customerHomeSrc.includes('worker.photoUrl'), 'T.3 CustomerHome displays worker photo');
   testAssert(customerHomeSrc.includes('worker.fullName'), 'T.4 CustomerHome displays worker name');
   testAssert(customerHomeSrc.includes("t('worker.verified_tick')"), 'T.5 CustomerHome displays green verified tick');
+
+  console.log('\n--- U. Worker Verification Status Check & Authoritative Session Synchronization ---');
+  const workerPendingPath = path.resolve(__dirname, '../../client/src/components/WorkerPendingScreen.tsx');
+  const workerPendingComponentSrc = fs.readFileSync(workerPendingPath, 'utf8');
+
+  testAssert(workerPendingComponentSrc.includes('workerStatusLoading.value'), 'U.1 WorkerPendingScreen inspects workerStatusLoading');
+  testAssert(workerPendingComponentSrc.includes('workerStatusError'), 'U.2 WorkerPendingScreen handles workerStatusError');
+  testAssert(workerPendingComponentSrc.includes('worker-pending-feedback'), 'U.3 Displays dedicated feedback element');
+
+  // U.1 Pending worker remains on the pending screen
+  authToken.value = 'mock-worker-token';
+  currentUser.value = { id: 'worker-1', phone: '9876543211', role: 'customer' } as User;
+  workerStatus.value = 'PENDING_VERIFICATION';
+
+  mockFetchHandler = async (url) => {
+    if (url.includes('/api/worker/status')) {
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({
+          success: true,
+          data: {
+            status: 'PENDING_VERIFICATION',
+            hasSubmitted: true,
+            hasAadhaarFront: true,
+            hasAadhaarBack: true,
+            hasPhoto: true,
+          },
+        }),
+      };
+    }
+    return { ok: false, status: 404, json: async () => ({}) };
+  };
+
+  const pendingResult = await fetchWorkerStatus();
+  testAssert(pendingResult === 'PENDING_VERIFICATION', 'U.4 Pending worker returns PENDING_VERIFICATION');
+  testAssert(workerStatus.value === 'PENDING_VERIFICATION', 'U.5 workerStatus remains PENDING_VERIFICATION');
+  testAssert(currentUser.value?.role === 'customer', 'U.6 User role strictly remains customer while pending');
+
+  // U.2 Verified worker refreshes authoritative user information
+  let meEndpointCalled = false;
+  mockFetchHandler = async (url, opts) => {
+    if (url.includes('/api/worker/status')) {
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({
+          success: true,
+          data: {
+            status: 'VERIFIED',
+            hasSubmitted: true,
+            categoryId: 'electrician',
+            hasAadhaarFront: true,
+            hasAadhaarBack: true,
+            hasPhoto: true,
+          },
+        }),
+      };
+    }
+    if (url.includes('/api/auth/me')) {
+      meEndpointCalled = true;
+      testAssert(opts?.headers && (opts.headers as any)['Authorization'] === 'Bearer mock-worker-token', 'U.7 Authoritative /api/auth/me called with Bearer token');
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({
+          success: true,
+          data: {
+            user: {
+              id: 'worker-1',
+              phone: '9876543211',
+              role: 'provider',
+              fullName: 'Suresh Kumar',
+              preferredLanguage: 'hi',
+              isActive: true,
+            },
+          },
+        }),
+      };
+    }
+    return { ok: false, status: 404, json: async () => ({}) };
+  };
+
+  const verifiedResult = await fetchWorkerStatus();
+  testAssert(meEndpointCalled === true, 'U.8 /api/auth/me was invoked upon detecting verified worker profile');
+  testAssert(verifiedResult === 'VERIFIED', 'U.9 fetchWorkerStatus returns VERIFIED');
+  testAssert(currentUser.value?.role === 'provider', 'U.10 currentUser.role authoritatively synchronized to provider');
+  testAssert(workerStatus.value === 'VERIFIED', 'U.11 workerStatus synchronized to VERIFIED');
+
+  // U.3 Refreshed provider role routes to Provider Home
+  testAssert(currentUser.value?.role === 'provider', 'U.12 Provider Home route guard currentUser.value?.role === provider is satisfied');
+
+  // U.4 Network or session-refresh failure does not grant provider access
+  // 4.1 When /api/worker/status reports VERIFIED, but /api/auth/me fails (500)
+  currentUser.value = { id: 'worker-2', phone: '9876543212', role: 'customer' } as User;
+  workerStatus.value = 'PENDING_VERIFICATION';
+
+  mockFetchHandler = async (url) => {
+    if (url.includes('/api/worker/status')) {
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({
+          success: true,
+          data: { status: 'VERIFIED', hasSubmitted: true, hasAadhaarFront: true, hasAadhaarBack: true, hasPhoto: true },
+        }),
+      };
+    }
+    if (url.includes('/api/auth/me')) {
+      return {
+        ok: false,
+        status: 500,
+        json: async () => ({ success: false, error: { messageEn: 'Internal Server Error' } }),
+      };
+    }
+    return { ok: false, status: 404, json: async () => ({}) };
+  };
+
+  const failedRefreshResult = await fetchWorkerStatus();
+  testAssert(failedRefreshResult === 'PENDING_VERIFICATION', 'U.13 Failed session refresh keeps status PENDING_VERIFICATION');
+  testAssert(currentUser.value?.role === 'customer', 'U.14 User role strictly remains customer on refresh failure');
+  testAssert(workerStatus.value === 'PENDING_VERIFICATION', 'U.15 workerStatus is NOT promoted to VERIFIED on refresh failure');
+  testAssert(workerStatusError.value !== null, 'U.16 workerStatusError populated with failure explanation');
+
+  // 4.2 When /api/worker/status reports VERIFIED, but /api/auth/me reports user role is still customer
+  mockFetchHandler = async (url) => {
+    if (url.includes('/api/worker/status')) {
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({
+          success: true,
+          data: { status: 'VERIFIED', hasSubmitted: true, hasAadhaarFront: true, hasAadhaarBack: true, hasPhoto: true },
+        }),
+      };
+    }
+    if (url.includes('/api/auth/me')) {
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({
+          success: true,
+          data: {
+            user: {
+              id: 'worker-2',
+              phone: '9876543212',
+              role: 'customer',
+              fullName: 'Worker Two',
+            },
+          },
+        }),
+      };
+    }
+    return { ok: false, status: 404, json: async () => ({}) };
+  };
+
+  const unpromotedResult = await fetchWorkerStatus();
+  testAssert(unpromotedResult === 'PENDING_VERIFICATION', 'U.17 Unpromoted server user role keeps status PENDING_VERIFICATION');
+  testAssert(currentUser.value?.role === 'customer', 'U.18 User role remains customer');
+  testAssert(workerStatus.value === 'PENDING_VERIFICATION', 'U.19 workerStatus is NOT promoted to VERIFIED without server role confirmation');
+
+  // 4.3 Network error during /api/worker/status fetch
+  mockFetchHandler = async () => { throw new Error('Network offline'); };
+  const netErrorResult = await fetchWorkerStatus();
+  testAssert(netErrorResult === null, 'U.20 Network error returns null');
+  testAssert(workerStatusError.value === 'Network offline', 'U.21 Network error message populated in workerStatusError');
+  testAssert(workerStatus.value === 'PENDING_VERIFICATION', 'U.22 Status preserved as PENDING_VERIFICATION during network failure');
+
+  // U.5 Session expiration handling (401 on status or 401 on /me)
+  mockFetchHandler = async (url) => {
+    if (url.includes('/api/worker/status')) {
+      return { ok: false, status: 401, json: async () => ({ success: false }) };
+    }
+    return { ok: false, status: 404, json: async () => ({}) };
+  };
+
+  const expiredResult = await fetchWorkerStatus();
+  testAssert(expiredResult === null, 'U.23 Session expiration returns null');
+  testAssert(authToken.value === null, 'U.24 Auth token cleared on session expiration');
+  testAssert(currentUser.value === null, 'U.25 User profile cleared on session expiration');
+  testAssert(isAuthenticated.value === false, 'U.26 isAuthenticated is false after expiration');
+
+  // ─── V. Worker Rejection & Document Re-upload Frontend UX ─────────────────
+  console.log('\n--- V. Worker Rejection & Document Re-upload Frontend UX ---');
+  const workerRejectedPath = path.resolve(__dirname, '../../client/src/components/WorkerRejectedScreen.tsx');
+  const workerRejectedComponentSrc = fs.readFileSync(workerRejectedPath, 'utf8');
+
+  testAssert(workerRejectedComponentSrc.includes("t('onboarding.rejected_title')"), 'V.1 WorkerRejectedScreen renders rejected title');
+  testAssert(workerRejectedComponentSrc.includes("t('onboarding.rejected_desc')"), 'V.2 WorkerRejectedScreen renders rejected description');
+  testAssert(workerRejectedComponentSrc.includes("t('onboarding.rejection_reason_label')"), 'V.3 WorkerRejectedScreen renders rejection reason label');
+  testAssert(workerRejectedComponentSrc.includes('rejectionReason.value'), 'V.4 WorkerRejectedScreen displays rejectionReason signal');
+  testAssert(workerRejectedComponentSrc.includes("t('onboarding.resubmit_btn')"), 'V.5 WorkerRejectedScreen renders resubmit button');
+  testAssert(workerRejectedComponentSrc.includes('isSubmittingWorker.value'), 'V.6 WorkerRejectedScreen handles in-flight submission state');
+  testAssert(workerRejectedComponentSrc.includes('hasExisting={existingHasFront.value}'), 'V.7 WorkerRejectedScreen passes on-file flag for Aadhaar Front');
+  testAssert(workerRejectedComponentSrc.includes('hasExisting={existingHasBack.value}'), 'V.8 WorkerRejectedScreen passes on-file flag for Aadhaar Back');
+  testAssert(workerRejectedComponentSrc.includes('hasExisting={existingHasPhoto.value}'), 'V.9 WorkerRejectedScreen passes on-file flag for Worker Photo');
+
+  // Verify app.tsx routes REJECTED to WorkerRejectedScreen
+  const appPath = path.resolve(__dirname, '../../client/src/app.tsx');
+  const appRoutingSrc = fs.readFileSync(appPath, 'utf8');
+  testAssert(appRoutingSrc.includes("workerStatus.value === 'REJECTED'"), 'V.10 App routes REJECTED status');
+  testAssert(appRoutingSrc.includes('<WorkerRejectedScreen />'), 'V.11 App renders WorkerRejectedScreen on REJECTED status');
+
+  // V.2 Status check returns REJECTED
+  authToken.value = 'mock-worker-rej-token';
+  currentUser.value = { id: 'worker-rej', phone: '9876543219', role: 'customer' } as User;
+  const mockRejectionReason = 'Aadhaar front is blurry. Please upload a clear photo.';
+  const mockRejectedAt = '2026-10-11T14:30:00.000Z';
+
+  mockFetchHandler = async (url) => {
+    if (url.includes('/api/worker/status')) {
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({
+          success: true,
+          data: {
+            status: 'REJECTED',
+            hasSubmitted: true,
+            fullName: 'Ramesh Sharma',
+            categoryId: 'plumber',
+            rejectionReason: mockRejectionReason,
+            rejectedAt: mockRejectedAt,
+            hasAadhaarFront: true,
+            hasAadhaarBack: true,
+            hasPhoto: true,
+          },
+        }),
+      };
+    }
+    return { ok: false, status: 404, json: async () => ({}) };
+  };
+
+  const rejStatusResult = await fetchWorkerStatus();
+  testAssert(rejStatusResult === 'REJECTED', 'V.12 fetchWorkerStatus returns REJECTED');
+  testAssert(workerStatus.value === 'REJECTED', 'V.13 workerStatus signal set to REJECTED');
+  testAssert(rejectionReason.value === mockRejectionReason, 'V.14 rejectionReason signal set to server reason');
+  testAssert(rejectedAt.value === mockRejectedAt, 'V.15 rejectedAt signal set to server timestamp');
+  testAssert(existingHasFront.value === true, 'V.16 existingHasFront is true');
+  testAssert(existingHasBack.value === true, 'V.17 existingHasBack is true');
+  testAssert(existingHasPhoto.value === true, 'V.18 existingHasPhoto is true');
+  testAssert(workerFullName.value === 'Ramesh Sharma', 'V.19 workerFullName populated from status');
+  testAssert(workerCategoryId.value === 'plumber', 'V.20 workerCategoryId populated from status');
+
+  // V.3 Partial resubmission from client
+  // Worker uploads replacement Aadhaar Front only
+  aadhaarFront.value = {
+    base64: 'new-front-base64',
+    mime: 'image/jpeg',
+    dataUrl: 'data:image/jpeg;base64,new-front-base64',
+  };
+  aadhaarBack.value = null; // untouched, relying on existingHasBack
+  workerPhoto.value = null;  // untouched, relying on existingHasPhoto
+
+  let resubmitPayload: any = null;
+  mockFetchHandler = async (url, init) => {
+    if (url.includes('/api/worker/onboarding')) {
+      resubmitPayload = JSON.parse(init?.body as string);
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({
+          success: true,
+          data: {
+            status: 'PENDING_VERIFICATION',
+            submittedAt: new Date().toISOString(),
+            messageEn: 'Resubmitted',
+            messageHi: 'पुनः सबमिट किया गया',
+          },
+        }),
+      };
+    }
+    return { ok: false, status: 404, json: async () => ({}) };
+  };
+
+  const resubmitOk = await submitWorkerOnboarding();
+  testAssert(resubmitOk === true, 'V.21 submitWorkerOnboarding returns true on successful resubmission');
+  testAssert(workerStatus.value === 'PENDING_VERIFICATION', 'V.22 workerStatus transitions to PENDING_VERIFICATION');
+  testAssert(rejectionReason.value === null, 'V.23 rejectionReason cleared to null upon resubmission');
+  testAssert(rejectedAt.value === null, 'V.24 rejectedAt cleared to null upon resubmission');
+  testAssert(aadhaarFront.value === null, 'V.25 aadhaarFront cleared from memory after resubmission');
+  testAssert(resubmitPayload?.aadhaarFrontBase64 === 'new-front-base64', 'V.26 Resubmission payload includes new Aadhaar Front');
+  testAssert(resubmitPayload?.aadhaarBackBase64 === undefined, 'V.27 Untouched Aadhaar Back is omitted from resubmission payload');
+  testAssert(resubmitPayload?.photoBase64 === undefined, 'V.28 Untouched Photo is omitted from resubmission payload');
 
   console.log('\n============================================================');
   console.log(`WORKER FRONTEND TESTS COMPLETE: ${passCount} passed, ${failCount} failed`);

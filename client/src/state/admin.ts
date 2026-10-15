@@ -2,7 +2,7 @@ import { signal } from '@preact/signals';
 import { ApiResponse, User } from '@shared';
 import { authToken, handleSessionExpired } from './auth';
 
-export type AdminTab = 'dashboard' | 'providers' | 'bookings';
+export type AdminTab = 'dashboard' | 'providers' | 'bookings' | 'users';
 
 export const adminActiveTab = signal<AdminTab>('dashboard');
 export const isAdminLoading = signal<boolean>(false);

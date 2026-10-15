@@ -426,7 +426,7 @@ async function runSecurityLockdownTests() {
   testAssert(pingHeadersRes.headers['x-content-type-options'] === 'nosniff', '21.1 X-Content-Type-Options: nosniff header present');
   testAssert(pingHeadersRes.headers['x-frame-options'] === 'DENY', '21.2 X-Frame-Options: DENY header present');
   testAssert(pingHeadersRes.headers['referrer-policy'] === 'strict-origin-when-cross-origin', '21.3 Referrer-Policy header present');
-  testAssert(pingHeadersRes.headers['permissions-policy'] === 'camera=(), microphone=(self), geolocation=()', '21.4 Permissions-Policy header present');
+  testAssert(pingHeadersRes.headers['permissions-policy'] === 'camera=(self), microphone=(self), geolocation=()', '21.4 Permissions-Policy header present');
   testAssert(pingHeadersRes.headers['cross-origin-opener-policy'] === 'same-origin', '21.5 Cross-Origin-Opener-Policy header present');
 
   // HSTS in production
@@ -499,6 +499,12 @@ async function runSecurityLockdownTests() {
   // 25. CHS-SEC-007: Role claim synchronization from database in authenticate middleware
   // Cust1 is initially role 'customer'. Update in DB to 'provider'
   await pool.query("UPDATE users SET role = 'provider' WHERE id = $1", [cust1Id]);
+  await pool.query(
+    `INSERT INTO provider_profiles (user_id, category_id, service_area, is_available, verification_status)
+     VALUES ($1, 'plumber', 'Chandil', true, 'VERIFIED')
+     ON CONFLICT (user_id) DO UPDATE SET verification_status = 'VERIFIED', is_available = true`,
+    [cust1Id]
+  );
   const syncRoleRes = await app.inject({
     method: 'GET',
     url: '/api/provider/jobs',
@@ -507,6 +513,7 @@ async function runSecurityLockdownTests() {
   testAssert(syncRoleRes.statusCode === 200, '25.1 Fresh DB role permits access without requiring re-issuance of JWT');
   // Revert role back to 'customer'
   await pool.query("UPDATE users SET role = 'customer' WHERE id = $1", [cust1Id]);
+  await pool.query("DELETE FROM provider_profiles WHERE user_id = $1", [cust1Id]);
   const revokedRoleRes = await app.inject({
     method: 'GET',
     url: '/api/provider/jobs',

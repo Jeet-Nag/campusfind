@@ -46,6 +46,12 @@ async function runProviderRejectionTests() {
     provider2Phone,
     adminPhone,
   ]);
+  await pool.query('DELETE FROM provider_profiles WHERE user_id IN (SELECT id FROM users WHERE phone IN ($1, $2, $3, $4))', [
+    customerPhone,
+    provider1Phone,
+    provider2Phone,
+    adminPhone,
+  ]);
   await pool.query('DELETE FROM users WHERE phone IN ($1, $2, $3, $4)', [
     customerPhone,
     provider1Phone,
@@ -74,6 +80,13 @@ async function runProviderRejectionTests() {
     [provider2Phone]
   );
   const provider2Id = prov2Rows[0].id;
+
+  await pool.query(
+    `INSERT INTO provider_profiles (user_id, category_id, service_area, is_available, verification_status)
+     VALUES ($1, 'electrician', 'Chandil', true, 'VERIFIED'),
+            ($2, 'electrician', 'Chandil', true, 'VERIFIED')`,
+    [provider1Id, provider2Id]
+  );
 
   const { rows: adminRows } = await pool.query<{ id: string }>(
     `INSERT INTO users (phone, role, full_name, preferred_language, is_active, token_version)
@@ -212,11 +225,14 @@ async function runProviderRejectionTests() {
     changed_by: string;
   }>('SELECT from_status, to_status, changed_by FROM booking_status_logs WHERE booking_id = $1 ORDER BY id ASC', [job1Id]);
 
-  testAssert(logRows.length === 2, 'Exactly two status logs exist in total (Initial Claim + Relinquish)');
+  testAssert(logRows.length === 3, 'Exactly three status logs exist in total (Initial Claim + Relinquish + Recovery)');
   const relinquishLog = logRows[1];
   testAssert(relinquishLog.from_status === 'PROVIDER_ACCEPTED', 'from_status is strictly PROVIDER_ACCEPTED (Requirement 16)');
   testAssert(relinquishLog.to_status === 'REJECTED_BY_PROVIDER', 'to_status is strictly REJECTED_BY_PROVIDER (Requirement 15 & 17)');
   testAssert(relinquishLog.changed_by === provider1Id, 'changed_by is strictly authenticated Provider 1 (Requirement 18)');
+  const recoveryLog = logRows[2];
+  testAssert(recoveryLog.from_status === 'REJECTED_BY_PROVIDER', 'Recovery from_status is strictly REJECTED_BY_PROVIDER');
+  testAssert(recoveryLog.to_status === 'SERVICE_REQUESTED', 'Recovery to_status is strictly SERVICE_REQUESTED');
 
   // 3.4 Customer Booking View
   const custViewRes = await app.inject({
@@ -246,7 +262,7 @@ async function runProviderRejectionTests() {
     'SELECT id FROM booking_status_logs WHERE booking_id = $1',
     [job1Id]
   );
-  testAssert(postRepeatLogs.length === 2, 'No duplicate audit events created on repeated request (Requirement 30)');
+  testAssert(postRepeatLogs.length === 3, 'No duplicate audit events created on repeated request (Requirement 30)');
 
   console.log('\n--- 5. Feed Re-Availability & Subsequent Claim (Requirements 23-24) ---');
 
@@ -421,6 +437,12 @@ async function runProviderRejectionTests() {
     adminPhone,
   ]);
   await pool.query('DELETE FROM bookings WHERE customer_id IN (SELECT id FROM users WHERE phone IN ($1, $2, $3, $4))', [
+    customerPhone,
+    provider1Phone,
+    provider2Phone,
+    adminPhone,
+  ]);
+  await pool.query('DELETE FROM provider_profiles WHERE user_id IN (SELECT id FROM users WHERE phone IN ($1, $2, $3, $4))', [
     customerPhone,
     provider1Phone,
     provider2Phone,

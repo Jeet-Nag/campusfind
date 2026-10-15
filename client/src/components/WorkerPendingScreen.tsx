@@ -1,5 +1,5 @@
 import { useState } from 'preact/hooks';
-import { workerStatusLoading, fetchWorkerStatus } from '../state/worker';
+import { workerStatusLoading, workerStatusError, fetchWorkerStatus } from '../state/worker';
 import { currentUser, logout } from '../state/auth';
 import { currentLanguage, selectLanguage, t } from '../state/language';
 import { ClockIcon, SpinnerIcon, CheckIcon, LogOutIcon } from './icons';
@@ -9,16 +9,31 @@ export function WorkerPendingScreen() {
   const [feedback, setFeedback] = useState<string | null>(null);
 
   const handleCheckStatus = async () => {
+    if (workerStatusLoading.value) return;
     setFeedback(null);
     const newStatus = await fetchWorkerStatus();
     if (newStatus === 'VERIFIED') {
-      // Routing will automatically transition to ProviderHome
+      // Authoritative user session refreshed, App routing automatically transitions to ProviderHome
       return;
     }
+    if (newStatus === 'PENDING_VERIFICATION') {
+      if (workerStatusError.value) {
+        setFeedback(workerStatusError.value);
+      } else {
+        setFeedback(
+          lang === 'hi'
+            ? 'सत्यापन अभी भी लंबित है। एडमिन 24 घंटे के भीतर समीक्षा करेगा।'
+            : 'Verification is still pending. Admin will review within 24 hours.'
+        );
+      }
+      return;
+    }
+    // Failed request or network error
     setFeedback(
-      lang === 'hi'
-        ? 'सत्यापन अभी भी लंबित है। एडमिन 24 घंटे के भीतर समीक्षा करेगा।'
-        : 'Verification is still pending. Admin will review within 24 hours.'
+      workerStatusError.value ||
+        (lang === 'hi'
+          ? 'नेटवर्क त्रुटि। कृपया इंटरनेट कनेक्शन जांचें।'
+          : 'Network error. Please check your internet connection.')
     );
   };
 
@@ -96,7 +111,14 @@ export function WorkerPendingScreen() {
           )}
 
           {feedback && (
-            <div class="p-3 rounded-lg bg-blue-50 border border-blue-200 text-brand text-xs flex items-center justify-center space-x-1.5">
+            <div
+              id="worker-pending-feedback"
+              class={`p-3 rounded-lg text-xs flex items-center justify-center space-x-1.5 ${
+                workerStatusError.value
+                  ? 'bg-amber-50 border border-amber-200 text-amber-900'
+                  : 'bg-blue-50 border border-blue-200 text-brand'
+              }`}
+            >
               <span>{feedback}</span>
             </div>
           )}

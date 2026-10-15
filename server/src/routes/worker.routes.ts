@@ -7,12 +7,12 @@ import { workerService, WorkerError } from '../services/worker.service';
 const workerOnboardingSchema = z.object({
   fullName: z.string().trim().min(1, 'Full name is required').max(100, 'Full name cannot exceed 100 characters'),
   categoryId: z.string().trim().min(1, 'Category ID is required'),
-  aadhaarFrontBase64: z.string().min(1, 'Aadhaar front image is required'),
-  aadhaarFrontMime: z.string().min(1, 'Aadhaar front MIME type is required'),
-  aadhaarBackBase64: z.string().min(1, 'Aadhaar back image is required'),
-  aadhaarBackMime: z.string().min(1, 'Aadhaar back MIME type is required'),
-  photoBase64: z.string().min(1, 'Worker photo is required'),
-  photoMime: z.string().min(1, 'Worker photo MIME type is required'),
+  aadhaarFrontBase64: z.string().optional(),
+  aadhaarFrontMime: z.string().optional(),
+  aadhaarBackBase64: z.string().optional(),
+  aadhaarBackMime: z.string().optional(),
+  photoBase64: z.string().optional(),
+  photoMime: z.string().optional(),
 });
 
 export const workerRoutes: FastifyPluginAsync = async (app: FastifyInstance) => {

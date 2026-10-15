@@ -38,6 +38,8 @@ async function runAdminProviderAssignmentTests() {
   const providerNoProfilePhone = '9800088008';
   const providerActiveBookingPhone = '9800088009';
   const providerOtherPhone = '9800088010';
+  const providerPendingPhone = '9800088011';
+  const providerRejectedPhone = '9800088012';
 
   const allTestPhones = [
     adminPhone,
@@ -50,6 +52,8 @@ async function runAdminProviderAssignmentTests() {
     providerNoProfilePhone,
     providerActiveBookingPhone,
     providerOtherPhone,
+    providerPendingPhone,
+    providerRejectedPhone,
   ];
 
   async function cleanupFixtures() {
@@ -107,8 +111,8 @@ async function runAdminProviderAssignmentTests() {
     );
     const pElecId = pElecRows[0].id;
     await pool.query(
-      `INSERT INTO provider_profiles (user_id, category_id, service_area, is_available, rating)
-       VALUES ($1, 'electrician', 'Chandil Bazar', true, 4.85)`,
+      `INSERT INTO provider_profiles (user_id, category_id, service_area, is_available, verification_status, rating)
+       VALUES ($1, 'electrician', 'Chandil Bazar', true, 'VERIFIED', 4.85)`,
       [pElecId]
     );
     const pElecToken = app.jwt.sign({ id: pElecId, phone: providerElectricianPhone, role: 'provider', tokenVersion: 1 });
@@ -121,8 +125,8 @@ async function runAdminProviderAssignmentTests() {
     );
     const pPlumbId = pPlumbRows[0].id;
     await pool.query(
-      `INSERT INTO provider_profiles (user_id, category_id, service_area, is_available, rating)
-       VALUES ($1, 'plumber', 'Dam Road', true, 4.90)`,
+      `INSERT INTO provider_profiles (user_id, category_id, service_area, is_available, verification_status, rating)
+       VALUES ($1, 'plumber', 'Dam Road', true, 'VERIFIED', 4.90)`,
       [pPlumbId]
     );
 
@@ -134,8 +138,8 @@ async function runAdminProviderAssignmentTests() {
     );
     const pInactId = pInactRows[0].id;
     await pool.query(
-      `INSERT INTO provider_profiles (user_id, category_id, service_area, is_available, rating)
-       VALUES ($1, 'electrician', 'Chowka', true, 4.00)`,
+      `INSERT INTO provider_profiles (user_id, category_id, service_area, is_available, verification_status, rating)
+       VALUES ($1, 'electrician', 'Chowka', true, 'VERIFIED', 4.00)`,
       [pInactId]
     );
 
@@ -147,8 +151,8 @@ async function runAdminProviderAssignmentTests() {
     );
     const pUnavailId = pUnavailRows[0].id;
     await pool.query(
-      `INSERT INTO provider_profiles (user_id, category_id, service_area, is_available, rating)
-       VALUES ($1, 'electrician', 'Station Road', false, 4.50)`,
+      `INSERT INTO provider_profiles (user_id, category_id, service_area, is_available, verification_status, rating)
+       VALUES ($1, 'electrician', 'Station Road', false, 'VERIFIED', 4.50)`,
       [pUnavailId]
     );
 
@@ -168,10 +172,11 @@ async function runAdminProviderAssignmentTests() {
     );
     const pActiveId = pActiveRows[0].id;
     await pool.query(
-      `INSERT INTO provider_profiles (user_id, category_id, service_area, is_available, rating)
-       VALUES ($1, 'electrician', 'Chandil Bazar', true, 4.70)`,
+      `INSERT INTO provider_profiles (user_id, category_id, service_area, is_available, verification_status, rating)
+       VALUES ($1, 'electrician', 'Chandil Bazar', true, 'VERIFIED', 4.70)`,
       [pActiveId]
     );
+    const pActiveToken = app.jwt.sign({ id: pActiveId, phone: providerActiveBookingPhone, role: 'provider', tokenVersion: 1 });
 
     // Provider 7: For state check seedings (so pElecId remains clean for assignment)
     const { rows: pOtherRows } = await pool.query<{ id: string }>(
@@ -181,9 +186,35 @@ async function runAdminProviderAssignmentTests() {
     );
     const pOtherId = pOtherRows[0].id;
     await pool.query(
-      `INSERT INTO provider_profiles (user_id, category_id, service_area, is_available, rating)
-       VALUES ($1, 'electrician', 'Chandil Bazar', true, 4.50)`,
+      `INSERT INTO provider_profiles (user_id, category_id, service_area, is_available, verification_status, rating)
+       VALUES ($1, 'electrician', 'Chandil Bazar', true, 'VERIFIED', 4.50)`,
       [pOtherId]
+    );
+
+    // Provider 8: Pending Verification
+    const { rows: pPendingRows } = await pool.query<{ id: string }>(
+      `INSERT INTO users (phone, role, preferred_language, full_name, is_active, token_version)
+       VALUES ($1, 'provider', 'hi', 'Pending Technician', true, 1) RETURNING id`,
+      [providerPendingPhone]
+    );
+    const pPendingId = pPendingRows[0].id;
+    await pool.query(
+      `INSERT INTO provider_profiles (user_id, category_id, service_area, is_available, verification_status, rating)
+       VALUES ($1, 'electrician', 'Chandil', true, 'PENDING_VERIFICATION', 4.50)`,
+      [pPendingId]
+    );
+
+    // Provider 9: Rejected
+    const { rows: pRejectedRows } = await pool.query<{ id: string }>(
+      `INSERT INTO users (phone, role, preferred_language, full_name, is_active, token_version)
+       VALUES ($1, 'provider', 'hi', 'Rejected Technician', true, 1) RETURNING id`,
+      [providerRejectedPhone]
+    );
+    const pRejectedId = pRejectedRows[0].id;
+    await pool.query(
+      `INSERT INTO provider_profiles (user_id, category_id, service_area, is_available, verification_status, rejection_reason, rating)
+       VALUES ($1, 'electrician', 'Chandil', true, 'REJECTED', 'Invalid documents', 4.50)`,
+      [pRejectedId]
     );
 
     // Helper to seed booking
@@ -498,6 +529,26 @@ async function runAdminProviderAssignmentTests() {
     assert(resCatMismatch.statusCode === 400, '24. Category mismatch receives 400 CATEGORY_MISMATCH');
     assert(resCatMismatch.json().error.code === 'CATEGORY_MISMATCH', '24b. Error code is CATEGORY_MISMATCH');
 
+    // 24c. Provider pending verification -> 400 PROVIDER_NOT_VERIFIED
+    const resPending = await app.inject({
+      method: 'POST',
+      url: `/api/admin/bookings/${bEligibleId}/assign`,
+      headers: { authorization: `Bearer ${adminToken}` },
+      payload: { providerId: pPendingId },
+    });
+    assert(resPending.statusCode === 400, '24c. Pending verification provider receives 400 PROVIDER_NOT_VERIFIED');
+    assert(resPending.json().error.code === 'PROVIDER_NOT_VERIFIED', '24d. Error code is PROVIDER_NOT_VERIFIED');
+
+    // 24e. Provider rejected verification -> 400 PROVIDER_NOT_VERIFIED
+    const resRejected = await app.inject({
+      method: 'POST',
+      url: `/api/admin/bookings/${bEligibleId}/assign`,
+      headers: { authorization: `Bearer ${adminToken}` },
+      payload: { providerId: pRejectedId },
+    });
+    assert(resRejected.statusCode === 400, '24e. Rejected provider receives 400 PROVIDER_NOT_VERIFIED');
+    assert(resRejected.json().error.code === 'PROVIDER_NOT_VERIFIED', '24f. Error code is PROVIDER_NOT_VERIFIED');
+
     // ============================================================
     // --- 5. ACTIVE OPERATIONAL BOOKING RULE ---
     // ============================================================
@@ -558,8 +609,50 @@ async function runAdminProviderAssignmentTests() {
     await pool.query('DELETE FROM booking_status_logs WHERE booking_id = $1', [bActPayPending]);
     await pool.query('DELETE FROM bookings WHERE id = $1', [bActPayPending]);
 
+    // 28b. Provider has PROVIDER_ASSIGNED booking -> 409
+    const bActAssigned = await seedBooking({ keySuffix: 'act-asgn', status: 'PROVIDER_ASSIGNED', providerId: pActiveId });
+    const resHasAssigned = await app.inject({
+      method: 'POST',
+      url: `/api/admin/bookings/${bCheckActiveId}/assign`,
+      headers: { authorization: `Bearer ${adminToken}` },
+      payload: { providerId: pActiveId },
+    });
+    assert(resHasAssigned.statusCode === 409, '28b. Provider with PROVIDER_ASSIGNED booking receives 409 Conflict');
+    assert(resHasAssigned.json().error.code === 'ACTIVE_BOOKING_EXISTS', '28b. Error code is ACTIVE_BOOKING_EXISTS');
+
+    await pool.query('DELETE FROM booking_status_logs WHERE booking_id = $1', [bActAssigned]);
+    await pool.query('DELETE FROM bookings WHERE id = $1', [bActAssigned]);
+
+    // 28c. Provider has SERVICE_COMPLETED booking -> 409
+    const bActCompleted = await seedBooking({ keySuffix: 'act-scomp', status: 'SERVICE_COMPLETED', providerId: pActiveId });
+    const resHasCompleted = await app.inject({
+      method: 'POST',
+      url: `/api/admin/bookings/${bCheckActiveId}/assign`,
+      headers: { authorization: `Bearer ${adminToken}` },
+      payload: { providerId: pActiveId },
+    });
+    assert(resHasCompleted.statusCode === 409, '28c. Provider with SERVICE_COMPLETED booking receives 409 Conflict');
+    assert(resHasCompleted.json().error.code === 'ACTIVE_BOOKING_EXISTS', '28c. Error code is ACTIVE_BOOKING_EXISTS');
+
+    await pool.query('DELETE FROM booking_status_logs WHERE booking_id = $1', [bActCompleted]);
+    await pool.query('DELETE FROM bookings WHERE id = $1', [bActCompleted]);
+
+    // 28d. Provider has PAYMENT_COLLECTED booking -> 409
+    const bActPayColl = await seedBooking({ keySuffix: 'act-pcoll', status: 'PAYMENT_COLLECTED', providerId: pActiveId });
+    const resHasPayColl = await app.inject({
+      method: 'POST',
+      url: `/api/admin/bookings/${bCheckActiveId}/assign`,
+      headers: { authorization: `Bearer ${adminToken}` },
+      payload: { providerId: pActiveId },
+    });
+    assert(resHasPayColl.statusCode === 409, '28d. Provider with PAYMENT_COLLECTED booking receives 409 Conflict');
+    assert(resHasPayColl.json().error.code === 'ACTIVE_BOOKING_EXISTS', '28d. Error code is ACTIVE_BOOKING_EXISTS');
+
+    await pool.query('DELETE FROM booking_status_logs WHERE booking_id = $1', [bActPayColl]);
+    await pool.query('DELETE FROM bookings WHERE id = $1', [bActPayColl]);
+
     // 29. Provider with ONLY completed historical booking can be assigned -> 200
-    await seedBooking({ keySuffix: 'hist-comp', status: 'BOOKING_COMPLETED', providerId: pActiveId });
+    const bHistId = await seedBooking({ keySuffix: 'hist-comp', status: 'BOOKING_COMPLETED', providerId: pActiveId });
     const resWithHistorical = await app.inject({
       method: 'POST',
       url: `/api/admin/bookings/${bCheckActiveId}/assign`,
@@ -567,6 +660,36 @@ async function runAdminProviderAssignmentTests() {
       payload: { providerId: pActiveId },
     });
     assert(resWithHistorical.statusCode === 200, '29. Provider with only completed historical booking can be assigned (200 OK)');
+    await pool.query('DELETE FROM booking_status_logs WHERE booking_id IN ($1, $2)', [bCheckActiveId, bHistId]);
+    await pool.query('DELETE FROM bookings WHERE id IN ($1, $2)', [bCheckActiveId, bHistId]);
+
+    // 29b. Concurrency race: simultaneous worker claim vs admin assignment for same provider
+    const bRaceWorkerId = await seedBooking({ keySuffix: 'race-wk', status: 'SERVICE_REQUESTED', categoryId: 'electrician' });
+    const bRaceAdminId = await seedBooking({ keySuffix: 'race-ad', status: 'SERVICE_REQUESTED', categoryId: 'electrician' });
+
+    const [raceWorkerRes, raceAdminRes] = await Promise.all([
+      app.inject({
+        method: 'POST',
+        url: `/api/provider/jobs/${bRaceWorkerId}/accept`,
+        headers: { authorization: `Bearer ${pActiveToken}` },
+      }),
+      app.inject({
+        method: 'POST',
+        url: `/api/admin/bookings/${bRaceAdminId}/assign`,
+        headers: { authorization: `Bearer ${adminToken}` },
+        payload: { providerId: pActiveId },
+      }),
+    ]);
+
+    const raceCodes = [raceWorkerRes.statusCode, raceAdminRes.statusCode].sort();
+    assert(raceCodes[0] === 200 && raceCodes[1] === 409, '29b. Concurrent worker claim vs admin assignment: exactly one 200 OK, one 409 Conflict');
+    const failingRes = raceWorkerRes.statusCode === 409 ? raceWorkerRes : raceAdminRes;
+    assert(failingRes.json().error.code === 'ACTIVE_BOOKING_EXISTS', '29b. Failing operation receives ACTIVE_BOOKING_EXISTS');
+
+    // Clean up race bookings
+    await pool.query('DELETE FROM booking_status_logs WHERE booking_id IN ($1, $2)', [bRaceWorkerId, bRaceAdminId]);
+    await pool.query('DELETE FROM bookings WHERE id IN ($1, $2)', [bRaceWorkerId, bRaceAdminId]);
+
 
     // ============================================================
     // --- 6. SUCCESSFUL ASSIGNMENT INVARIANTS ---
@@ -659,6 +782,9 @@ async function runAdminProviderAssignmentTests() {
     assert(logRows[0].notes.includes('Ramesh Electrician'), '40a. Audit note contains server-resolved provider name');
     assert(logRows[0].notes.includes(providerElectricianPhone), '40b. Audit note contains server-resolved provider phone');
 
+    // Clean up successful assignment target so pElecId is clean for subsequent tests
+    await pool.query("UPDATE bookings SET status = 'BOOKING_COMPLETED', completed_at = NOW() WHERE id = $1", [bSuccessTarget]);
+
     // ============================================================
     // --- 7. ATOMICITY & ROLLBACK ---
     // ============================================================
@@ -739,6 +865,7 @@ async function runAdminProviderAssignmentTests() {
 
     const statusCodesRace = [raceRes1.statusCode, raceRes2.statusCode].sort();
     assert(statusCodesRace[0] === 200 && statusCodesRace[1] === 409, '44. Concurrent assignment by 2 admins: exactly one 200 OK, one 409 Conflict');
+    await pool.query("UPDATE bookings SET status = 'BOOKING_COMPLETED', completed_at = NOW() WHERE id = $1", [bRaceBookingId]);
 
     // 45. Admin assignment vs provider acceptance race -> exactly one succeeds
     const bRaceProvId = await seedBooking({

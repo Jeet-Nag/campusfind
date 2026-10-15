@@ -43,6 +43,13 @@ import {
   openReviewModal,
   closeReviewModal,
   verifyWorkerProvider,
+  isRejectModalOpen,
+  rejectingReason,
+  isRejectingWorker,
+  rejectError,
+  openRejectModal,
+  closeRejectModal,
+  rejectWorkerProvider,
   viewingDocument,
   openDocumentViewer,
   closeDocumentViewer,
@@ -682,6 +689,7 @@ export function AdminProvidersView() {
               <option value="pending">{t('admin.filter_pending')}</option>
               <option value="active">{t('admin.filter_active')}</option>
               <option value="inactive">{t('admin.filter_inactive')}</option>
+              <option value="rejected">{t('admin.filter_rejected')}</option>
             </select>
           </div>
 
@@ -780,6 +788,7 @@ export function AdminProvidersView() {
                   lang === 'hi' ? provider.categoryTitleHi : provider.categoryTitleEn;
                 const isToggling = statusTogglingId.value === provider.id;
                 const isPending = provider.verificationStatus === 'PENDING_VERIFICATION';
+                const isRejected = provider.verificationStatus === 'REJECTED';
 
                 return (
                   <tr
@@ -787,6 +796,8 @@ export function AdminProvidersView() {
                     class={`transition-colors ${
                       isPending
                         ? 'bg-amber-50/60 hover:bg-amber-100/60 border-l-4 border-l-amber-500'
+                        : isRejected
+                        ? 'bg-red-50/60 hover:bg-red-100/60 border-l-4 border-l-red-500'
                         : 'hover:bg-slate-50/75'
                     }`}
                   >
@@ -819,6 +830,11 @@ export function AdminProvidersView() {
                           <span class="w-1.5 h-1.5 rounded-full bg-amber-600 inline-block animate-pulse"></span>
                           <span>{t('admin.status_pending_verification')}</span>
                         </span>
+                      ) : isRejected ? (
+                        <span class="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-xs font-bold bg-red-100 text-red-900 border border-red-300 shadow-2xs">
+                          <span class="w-1.5 h-1.5 rounded-full bg-red-600 inline-block"></span>
+                          <span>{t('admin.filter_rejected')}</span>
+                        </span>
                       ) : provider.isActive ? (
                         <span class="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-xs font-medium bg-green-50 text-action border border-green-200">
                           <span class="w-1.5 h-1.5 rounded-full bg-action inline-block"></span>
@@ -838,6 +854,10 @@ export function AdminProvidersView() {
                         <span class="text-xs font-medium text-amber-700">
                           {t('admin.status_pending_verification')}
                         </span>
+                      ) : isRejected ? (
+                        <span class="text-xs font-medium text-red-700">
+                          {t('admin.filter_rejected')}
+                        </span>
                       ) : provider.isAvailable ? (
                         <span class="text-xs font-medium text-text-main">
                           {t('admin.available')}
@@ -852,10 +872,14 @@ export function AdminProvidersView() {
                     {/* Actions */}
                     <td class="py-3.5 px-4 text-right">
                       <div class="flex items-center justify-end gap-2">
-                        {isPending ? (
+                        {isPending || isRejected ? (
                           <button
                             onClick={() => openReviewModal(provider)}
-                            class="min-h-[48px] px-3.5 py-2 bg-amber-500 hover:bg-amber-600 active:bg-amber-700 text-white font-bold rounded-lg text-xs flex items-center gap-1.5 shadow-2xs transition-colors"
+                            class={`min-h-[48px] px-3.5 py-2 text-white font-bold rounded-lg text-xs flex items-center gap-1.5 shadow-2xs transition-colors ${
+                              isRejected
+                                ? 'bg-red-600 hover:bg-red-700 active:bg-red-800'
+                                : 'bg-amber-500 hover:bg-amber-600 active:bg-amber-700'
+                            }`}
                             title={t('admin.review_application')}
                           >
                             <FileTextIcon size={14} />
@@ -919,12 +943,17 @@ export function AdminProvidersView() {
               lang === 'hi' ? provider.categoryTitleHi : provider.categoryTitleEn;
             const isToggling = statusTogglingId.value === provider.id;
             const isPending = provider.verificationStatus === 'PENDING_VERIFICATION';
+            const isRejected = provider.verificationStatus === 'REJECTED';
 
             return (
               <div
                 key={provider.id}
                 class={`bg-surface border rounded-lg p-4 shadow-xs space-y-3 ${
-                  isPending ? 'border-amber-400 bg-amber-50/25 ring-1 ring-amber-300' : 'border-border'
+                  isPending
+                    ? 'border-amber-400 bg-amber-50/25 ring-1 ring-amber-300'
+                    : isRejected
+                    ? 'border-red-400 bg-red-50/25 ring-1 ring-red-300'
+                    : 'border-border'
                 }`}
               >
                 {/* Header: Name and Status */}
@@ -942,6 +971,11 @@ export function AdminProvidersView() {
                     <span class="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-bold bg-amber-100 text-amber-900 border border-amber-300 shadow-2xs">
                       <span class="w-1.5 h-1.5 rounded-full bg-amber-600 inline-block animate-pulse"></span>
                       <span>{t('admin.status_pending_verification')}</span>
+                    </span>
+                  ) : isRejected ? (
+                    <span class="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-bold bg-red-100 text-red-900 border border-red-300 shadow-2xs">
+                      <span class="w-1.5 h-1.5 rounded-full bg-red-600 inline-block"></span>
+                      <span>{t('admin.filter_rejected')}</span>
                     </span>
                   ) : provider.isActive ? (
                     <span class="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-semibold bg-green-50 text-action border border-green-200">
@@ -970,10 +1004,14 @@ export function AdminProvidersView() {
 
                 {/* Actions */}
                 <div class="pt-1">
-                  {isPending ? (
+                  {isPending || isRejected ? (
                     <button
                       onClick={() => openReviewModal(provider)}
-                      class="w-full min-h-[48px] px-4 py-2.5 bg-amber-500 hover:bg-amber-600 active:bg-amber-700 text-white rounded-lg text-xs font-bold flex items-center justify-center gap-2 shadow-2xs transition-colors"
+                      class={`w-full min-h-[48px] px-4 py-2.5 text-white rounded-lg text-xs font-bold flex items-center justify-center gap-2 shadow-2xs transition-colors ${
+                        isRejected
+                          ? 'bg-red-600 hover:bg-red-700 active:bg-red-800'
+                          : 'bg-amber-500 hover:bg-amber-600 active:bg-amber-700'
+                      }`}
                     >
                       <FileTextIcon size={16} />
                       <span>{t('admin.review_application')}</span>
@@ -1426,6 +1464,19 @@ export function AdminProvidersView() {
                 </div>
               )}
 
+              {/* Existing Rejection Reason Banner */}
+              {reviewingProvider.value.verificationStatus === 'REJECTED' && reviewingProvider.value.rejectionReason && (
+                <div class="p-4 bg-red-50 border border-red-200 rounded-lg text-xs space-y-1">
+                  <div class="font-bold text-danger flex items-center gap-1.5 text-sm">
+                    <AlertCircleIcon size={16} />
+                    <span>{t('onboarding.rejection_reason_label')}</span>
+                  </div>
+                  <p class="text-text-main font-medium leading-relaxed">
+                    {reviewingProvider.value.rejectionReason}
+                  </p>
+                </div>
+              )}
+
               {/* Section 1: Worker Information */}
               <div class="space-y-3">
                 <h4 class="text-xs font-bold text-text-sub uppercase tracking-wider flex items-center gap-1.5">
@@ -1472,9 +1523,15 @@ export function AdminProvidersView() {
 
                   <div>
                     <span class="text-text-sub block font-medium mb-0.5">{t('admin.col_status')}</span>
-                    <span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-bold bg-amber-100 text-amber-900 border border-amber-300">
-                      {t('admin.status_pending_verification')}
-                    </span>
+                    {reviewingProvider.value.verificationStatus === 'REJECTED' ? (
+                      <span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-bold bg-red-100 text-red-900 border border-red-300">
+                        {t('admin.filter_rejected')}
+                      </span>
+                    ) : (
+                      <span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-bold bg-amber-100 text-amber-900 border border-amber-300">
+                        {t('admin.status_pending_verification')}
+                      </span>
+                    )}
                   </div>
                 </div>
               </div>
@@ -1527,34 +1584,131 @@ export function AdminProvidersView() {
             </div>
 
             {/* Modal Actions Footer */}
-            <div class="px-6 py-4 border-t border-border flex items-center justify-end gap-3 shrink-0 bg-slate-50">
+            <div class="px-6 py-4 border-t border-border flex items-center justify-between shrink-0 bg-slate-50">
               <button
                 type="button"
-                onClick={closeReviewModal}
+                onClick={() => openRejectModal(reviewingProvider.value!)}
                 disabled={isVerifyingWorker.value}
-                class="min-h-[48px] px-4 py-2.5 bg-white border border-border rounded-lg text-sm font-semibold text-text-main hover:bg-background transition-colors disabled:opacity-50"
+                class="min-h-[48px] px-4 py-2.5 bg-red-50 hover:bg-red-100 border border-red-300 text-danger font-bold rounded-lg transition-colors flex items-center gap-2 disabled:opacity-50"
               >
-                {t('admin.cancel')}
+                <XIcon size={18} />
+                <span>{t('admin.reject_worker_btn')}</span>
               </button>
 
+              <div class="flex items-center gap-3">
+                <button
+                  type="button"
+                  onClick={closeReviewModal}
+                  disabled={isVerifyingWorker.value}
+                  class="min-h-[48px] px-4 py-2.5 bg-white border border-border rounded-lg text-sm font-semibold text-text-main hover:bg-background transition-colors disabled:opacity-50"
+                >
+                  {t('admin.cancel')}
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => verifyWorkerProvider(reviewingProvider.value!.id)}
+                  disabled={isVerifyingWorker.value}
+                  class="min-h-[48px] px-5 py-2.5 bg-action hover:bg-action-active text-white font-bold rounded-lg shadow-xs flex items-center gap-2 transition-colors disabled:opacity-50"
+                >
+                  {isVerifyingWorker.value ? (
+                    <>
+                      <SpinnerIcon size={18} class="animate-spin text-white" />
+                      <span>{t('admin.verifying')}</span>
+                    </>
+                  ) : (
+                    <>
+                      <CheckIcon size={18} />
+                      <span>{t('admin.verify_worker_btn')}</span>
+                    </>
+                  )}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ================================================== */}
+      {/* REJECT WORKER CONFIRMATION MODAL                   */}
+      {/* ================================================== */}
+      {isRejectModalOpen.value && reviewingProvider.value && (
+        <div class="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 overflow-y-auto">
+          <div class="bg-surface border border-border rounded-xl w-full max-w-lg shadow-xl overflow-hidden my-8">
+            <div class="px-6 py-4 border-b border-border flex items-center justify-between bg-red-50/50">
+              <div class="flex items-center gap-2 text-danger font-bold text-base">
+                <AlertCircleIcon size={20} />
+                <h3>{t('admin.reject_modal_title')}</h3>
+              </div>
               <button
-                type="button"
-                onClick={() => verifyWorkerProvider(reviewingProvider.value!.id)}
-                disabled={isVerifyingWorker.value}
-                class="min-h-[48px] px-5 py-2.5 bg-action hover:bg-action-active text-white font-bold rounded-lg shadow-xs flex items-center gap-2 transition-colors disabled:opacity-50"
+                onClick={closeRejectModal}
+                disabled={isRejectingWorker.value}
+                class="min-h-[44px] min-w-[44px] p-2 text-text-sub hover:text-text-main rounded-lg flex items-center justify-center disabled:opacity-50"
+                aria-label="Close"
               >
-                {isVerifyingWorker.value ? (
-                  <>
-                    <SpinnerIcon size={18} class="animate-spin text-white" />
-                    <span>{t('admin.verifying')}</span>
-                  </>
-                ) : (
-                  <>
-                    <CheckIcon size={18} />
-                    <span>{t('admin.verify_worker_btn')}</span>
-                  </>
-                )}
+                <XIcon size={20} />
               </button>
+            </div>
+
+            <div class="p-6 space-y-4">
+              <p class="text-xs text-text-sub leading-relaxed">
+                {t('admin.reject_confirm_warning')}
+              </p>
+
+              {rejectError.value && (
+                <div class="p-3 rounded-lg bg-red-50 border border-red-200 flex items-start gap-2.5 text-danger text-xs font-medium">
+                  <AlertCircleIcon size={18} class="shrink-0 mt-0.5" />
+                  <span>{rejectError.value}</span>
+                </div>
+              )}
+
+              <div>
+                <div class="flex items-center justify-between mb-1.5">
+                  <label class="block text-xs font-bold text-text-main uppercase tracking-wider">
+                    {t('admin.reject_reason_label')} *
+                  </label>
+                  <span class="text-[11px] text-text-sub font-mono">
+                    {rejectingReason.value.length}/500
+                  </span>
+                </div>
+                <textarea
+                  required
+                  rows={4}
+                  maxLength={500}
+                  value={rejectingReason.value}
+                  onInput={(e) => {
+                    rejectingReason.value = (e.target as HTMLTextAreaElement).value;
+                  }}
+                  placeholder={t('admin.reject_reason_placeholder')}
+                  class="w-full p-3 bg-background border border-border rounded-lg text-sm text-text-main focus:outline-none focus:ring-2 focus:ring-red-400 focus:border-red-400"
+                />
+              </div>
+
+              <div class="pt-3 border-t border-border flex items-center justify-end gap-3">
+                <button
+                  type="button"
+                  onClick={closeRejectModal}
+                  disabled={isRejectingWorker.value}
+                  class="min-h-[48px] px-4 py-2.5 bg-white border border-border rounded-lg text-sm font-semibold text-text-main hover:bg-background transition-colors disabled:opacity-50"
+                >
+                  {t('admin.cancel')}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => rejectWorkerProvider(reviewingProvider.value!.id, rejectingReason.value)}
+                  disabled={isRejectingWorker.value || rejectingReason.value.trim().length === 0}
+                  class="min-h-[48px] px-5 py-2.5 bg-danger hover:bg-red-700 text-white font-bold rounded-lg shadow-xs flex items-center gap-2 transition-colors disabled:opacity-50"
+                >
+                  {isRejectingWorker.value ? (
+                    <>
+                      <SpinnerIcon size={18} class="animate-spin text-white" />
+                      <span>{t('admin.rejecting_worker')}</span>
+                    </>
+                  ) : (
+                    <span>{t('admin.reject_confirm_btn')}</span>
+                  )}
+                </button>
+              </div>
             </div>
           </div>
         </div>

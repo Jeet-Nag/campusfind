@@ -1,7 +1,7 @@
 import { FastifyInstance, FastifyPluginAsync } from 'fastify';
 import { db } from '../db';
 import { authenticate, requireRole } from '../middleware/auth';
-import { ApiResponse, ProviderJob, BookingStatus } from '@shared';
+import { ApiResponse, ProviderJob, BookingStatus, ACTIVE_BOOKING_STATUSES } from '@shared';
 
 interface DbProviderJobRow {
   id: string;
@@ -57,16 +57,79 @@ export const providerRoutes: FastifyPluginAsync = async (app: FastifyInstance) =
       return reply.status(500).send(response);
     }
 
-    const { rows } = await pool.query<DbProviderJobRow>(
-      `SELECT id, category_id, area_locality, landmark, text_description, 
-              audio_url, audio_duration_seconds, visiting_fee, status, created_at
-       FROM bookings 
-       WHERE (status = 'SERVICE_REQUESTED' AND provider_id IS NULL)
-          OR (status = 'PROVIDER_ASSIGNED' AND provider_id = $1)
-       ORDER BY CASE WHEN status = 'PROVIDER_ASSIGNED' THEN 0 ELSE 1 END, created_at DESC
-       LIMIT 50`,
+    const profileRes = await pool.query<{
+      category_id: string | null;
+      verification_status: string | null;
+      is_available: boolean | null;
+    }>(
+      `SELECT category_id, verification_status, is_available
+       FROM provider_profiles
+       WHERE user_id = $1`,
       [request.user.id]
     );
+
+    const providerProfile = profileRes.rows[0];
+
+    if (!providerProfile) {
+      const response: ApiResponse = {
+        success: false,
+        error: {
+          code: 'FORBIDDEN',
+          messageEn: 'Provider profile is missing.',
+          messageHi: 'मिस्त्री प्रोफ़ाइल गायब है।',
+        },
+      };
+      return reply.status(403).send(response);
+    }
+
+    if (providerProfile.verification_status !== 'VERIFIED') {
+      const isRejected = providerProfile.verification_status === 'REJECTED';
+      const response: ApiResponse = {
+        success: false,
+        error: {
+          code: 'FORBIDDEN',
+          messageEn: isRejected
+            ? 'Provider account is not authorized to view jobs.'
+            : 'Provider account verification is pending approval.',
+          messageHi: isRejected
+            ? 'मिस्त्री खाता काम देखने के लिए अधिकृत नहीं है।'
+            : 'मिस्त्री खाता सत्यापन स्वीकृति के लिए लंबित है।',
+        },
+      };
+      return reply.status(403).send(response);
+    }
+
+    const categoryId = providerProfile.category_id;
+    let rows: DbProviderJobRow[] = [];
+
+    if (!categoryId || providerProfile.is_available === false) {
+      const { rows: assignedRows } = await pool.query<DbProviderJobRow>(
+        `SELECT id, category_id, area_locality, landmark, text_description, 
+                audio_url, audio_duration_seconds, visiting_fee, status, created_at
+         FROM bookings 
+         WHERE status = 'PROVIDER_ASSIGNED' AND provider_id = $1
+         ORDER BY created_at DESC
+         LIMIT 50`,
+        [request.user.id]
+      );
+      rows = assignedRows;
+    } else {
+      const { rows: feedRows } = await pool.query<DbProviderJobRow>(
+        `SELECT id, category_id, area_locality, landmark, text_description, 
+                audio_url, audio_duration_seconds, visiting_fee, status, created_at
+         FROM bookings 
+         WHERE (status = 'SERVICE_REQUESTED' AND provider_id IS NULL AND category_id = $2
+                AND id NOT IN (
+                  SELECT booking_id FROM booking_status_logs 
+                  WHERE to_status = 'REJECTED_BY_PROVIDER' AND changed_by = $1
+                ))
+            OR (status = 'PROVIDER_ASSIGNED' AND provider_id = $1)
+         ORDER BY CASE WHEN status = 'PROVIDER_ASSIGNED' THEN 0 ELSE 1 END, created_at DESC
+         LIMIT 50`,
+        [request.user.id, categoryId]
+      );
+      rows = feedRows;
+    }
 
     const jobs: ProviderJob[] = rows.map(mapProviderJobRow);
 
@@ -152,6 +215,44 @@ export const providerRoutes: FastifyPluginAsync = async (app: FastifyInstance) =
       return reply.status(404).send(response);
     }
 
+    if (isOpen) {
+      const profileRes = await pool.query<{ category_id: string | null; verification_status: string | null; is_available: boolean | null }>(
+        'SELECT category_id, verification_status, is_available FROM provider_profiles WHERE user_id = $1',
+        [request.user.id]
+      );
+      const profile = profileRes.rows[0];
+      if (!profile || profile.verification_status !== 'VERIFIED' || profile.is_available === false || profile.category_id !== row.category_id) {
+        const response: ApiResponse = {
+          success: false,
+          error: {
+            code: 'BOOKING_NOT_FOUND',
+            messageEn: 'Job not found.',
+            messageHi: 'काम नहीं मिला।',
+          },
+        };
+        return reply.status(404).send(response);
+      }
+
+      // Safeguard: Check if this provider previously declined this open job
+      const declinedRes = await pool.query<{ id: number }>(
+        `SELECT id FROM booking_status_logs 
+         WHERE booking_id = $1 AND to_status = 'REJECTED_BY_PROVIDER' AND changed_by = $2 
+         LIMIT 1`,
+        [id, request.user.id]
+      );
+      if (declinedRes.rows.length > 0) {
+        const response: ApiResponse = {
+          success: false,
+          error: {
+            code: 'BOOKING_NOT_FOUND',
+            messageEn: 'Job not found.',
+            messageHi: 'काम नहीं मिला।',
+          },
+        };
+        return reply.status(404).send(response);
+      }
+    }
+
     const job: ProviderJob = mapProviderJobRow(row);
 
     const response: ApiResponse<ProviderJob> = {
@@ -205,8 +306,8 @@ export const providerRoutes: FastifyPluginAsync = async (app: FastifyInstance) =
     try {
       await client.query('BEGIN');
 
-      const checkRes = await client.query<{ id: string; provider_id: string | null; status: BookingStatus }>(
-        'SELECT id, provider_id, status FROM bookings WHERE id = $1 FOR UPDATE',
+      const checkRes = await client.query<{ id: string; provider_id: string | null; category_id: string; status: BookingStatus }>(
+        'SELECT id, provider_id, category_id, status FROM bookings WHERE id = $1 FOR UPDATE',
         [id]
       );
 
@@ -242,7 +343,62 @@ export const providerRoutes: FastifyPluginAsync = async (app: FastifyInstance) =
         return reply.status(403).send(response);
       }
 
+      // 3. Re-read provider profile and lock row to prevent concurrent claims/status changes
+      const profileRes = await client.query<{
+        category_id: string | null;
+        verification_status: string | null;
+        is_available: boolean | null;
+      }>(
+        'SELECT category_id, verification_status, is_available FROM provider_profiles WHERE user_id = $1 FOR UPDATE',
+        [request.user.id]
+      );
+
       const existing = checkRes.rows[0];
+      const providerProfile = profileRes.rows[0];
+
+      if (!providerProfile) {
+        await client.query('ROLLBACK');
+        const response: ApiResponse = {
+          success: false,
+          error: {
+            code: 'FORBIDDEN',
+            messageEn: 'Provider profile is missing.',
+            messageHi: 'मिस्त्री प्रोफ़ाइल गायब है।',
+          },
+        };
+        return reply.status(403).send(response);
+      }
+
+      if (providerProfile.verification_status !== 'VERIFIED') {
+        await client.query('ROLLBACK');
+        const isRejected = providerProfile.verification_status === 'REJECTED';
+        const response: ApiResponse = {
+          success: false,
+          error: {
+            code: 'FORBIDDEN',
+            messageEn: isRejected
+              ? 'Provider account is not authorized to accept jobs.'
+              : 'Provider account verification is pending approval.',
+            messageHi: isRejected
+              ? 'मिस्त्री खाता काम स्वीकार करने के लिए अधिकृत नहीं है।'
+              : 'मिस्त्री खाता सत्यापन स्वीकृति के लिए लंबित है।',
+          },
+        };
+        return reply.status(403).send(response);
+      }
+
+      if (providerProfile.is_available === false) {
+        await client.query('ROLLBACK');
+        const response: ApiResponse = {
+          success: false,
+          error: {
+            code: 'PROVIDER_UNAVAILABLE',
+            messageEn: 'You are currently marked unavailable and cannot accept jobs.',
+            messageHi: 'आप वर्तमान में अनुपलब्ध हैं और काम स्वीकार नहीं कर सकते।',
+          },
+        };
+        return reply.status(400).send(response);
+      }
 
       // 4. Repeated acceptance by the SAME provider (Idempotency guarantee)
       if (existing.provider_id === request.user.id && existing.status === 'PROVIDER_ACCEPTED') {
@@ -261,10 +417,53 @@ export const providerRoutes: FastifyPluginAsync = async (app: FastifyInstance) =
         return reply.status(200).send(response);
       }
 
+      // 5. Single active booking constraint: ensure provider has no active job in progress
+      const activeJobRes = await client.query<{ id: string; status: BookingStatus }>(
+        `SELECT id, status FROM bookings
+         WHERE provider_id = $1
+           AND id != $2
+           AND status IN ('PROVIDER_ASSIGNED', 'PROVIDER_ACCEPTED', 'PROVIDER_ON_THE_WAY', 'SERVICE_STARTED', 'SERVICE_COMPLETED', 'PAYMENT_PENDING', 'PAYMENT_COLLECTED')
+         LIMIT 1`,
+        [request.user.id, id]
+      );
+
+      if (activeJobRes.rows.length > 0) {
+        await client.query('ROLLBACK');
+        const response: ApiResponse = {
+          success: false,
+          error: {
+            code: 'ACTIVE_BOOKING_EXISTS',
+            messageEn: 'You already have an active job in progress.',
+            messageHi: 'आपके पास पहले से एक सक्रिय काम प्रगति पर है।',
+          },
+        };
+        return reply.status(409).send(response);
+      }
+
       let fromStatus: BookingStatus | null = null;
       let auditNote = '';
 
       if (existing.status === 'SERVICE_REQUESTED' && existing.provider_id === null) {
+        // Safeguard: verify provider has not previously declined this booking
+        const declinedCheck = await client.query<{ id: number }>(
+          `SELECT id FROM booking_status_logs 
+           WHERE booking_id = $1 AND to_status = 'REJECTED_BY_PROVIDER' AND changed_by = $2 
+           LIMIT 1`,
+          [id, request.user.id]
+        );
+        if (declinedCheck.rows.length > 0) {
+          await client.query('ROLLBACK');
+          const response: ApiResponse = {
+            success: false,
+            error: {
+              code: 'JOB_ALREADY_DECLINED',
+              messageEn: 'You have previously declined this job and cannot accept it.',
+              messageHi: 'आपने पहले यह काम अस्वीकार कर दिया था और इसे स्वीकार नहीं कर सकते।',
+            },
+          };
+          return reply.status(409).send(response);
+        }
+
         fromStatus = 'SERVICE_REQUESTED';
         auditNote = 'Technician accepted job';
       } else if (existing.status === 'PROVIDER_ASSIGNED' && existing.provider_id === request.user.id) {
@@ -283,6 +482,20 @@ export const providerRoutes: FastifyPluginAsync = async (app: FastifyInstance) =
           },
         };
         return reply.status(409).send(response);
+      }
+
+      // 5. Category matching validation
+      if (!providerProfile?.category_id || providerProfile.category_id !== existing.category_id) {
+        await client.query('ROLLBACK');
+        const response: ApiResponse = {
+          success: false,
+          error: {
+            code: 'CATEGORY_MISMATCH',
+            messageEn: 'Provider category does not match booking category.',
+            messageHi: 'मिस्त्री की श्रेणी बुकिंग श्रेणी से मेल नहीं खाती।',
+          },
+        };
+        return reply.status(400).send(response);
       }
 
       // 2. Atomic claim / accept
@@ -443,14 +656,12 @@ export const providerRoutes: FastifyPluginAsync = async (app: FastifyInstance) =
       }
 
       const fromStatus = existing.status;
-      const toStatus = fromStatus === 'PROVIDER_ASSIGNED'
-        ? 'SERVICE_REQUESTED'
-        : 'REJECTED_BY_PROVIDER';
-      const auditNote = fromStatus === 'PROVIDER_ASSIGNED'
-        ? 'Technician declined assigned job; returned to broadcast'
+      const declineAuditNote = fromStatus === 'PROVIDER_ASSIGNED'
+        ? 'Technician declined assigned job'
         : 'Relinquished by technician';
+      const recoveryAuditNote = 'Recovered to open broadcast pool';
 
-      // 2. Atomic conditional relinquishment
+      // 1. Atomic conditional update to recovered SERVICE_REQUESTED
       const updateRes = await client.query<DbProviderJobRow>(
         `UPDATE bookings
          SET status = 'SERVICE_REQUESTED',
@@ -463,11 +674,18 @@ export const providerRoutes: FastifyPluginAsync = async (app: FastifyInstance) =
         [id]
       );
 
-      // 3. Atomically record the audit log entry
+      // 2. Sequential Audit Log 1: Decline transition (fromStatus -> REJECTED_BY_PROVIDER)
       await client.query(
         `INSERT INTO booking_status_logs (booking_id, from_status, to_status, changed_by, notes)
-         VALUES ($1, $2, $3, $4, $5)`,
-        [id, fromStatus, toStatus, request.user.id, auditNote]
+         VALUES ($1, $2, 'REJECTED_BY_PROVIDER', $3, $4)`,
+        [id, fromStatus, request.user.id, declineAuditNote]
+      );
+
+      // 3. Sequential Audit Log 2: Recovery transition (REJECTED_BY_PROVIDER -> SERVICE_REQUESTED)
+      await client.query(
+        `INSERT INTO booking_status_logs (booking_id, from_status, to_status, changed_by, notes)
+         VALUES ($1, 'REJECTED_BY_PROVIDER', 'SERVICE_REQUESTED', $2, $3)`,
+        [id, request.user.id, recoveryAuditNote]
       );
 
       await client.query('COMMIT');

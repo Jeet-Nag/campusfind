@@ -103,6 +103,8 @@ const mockProviders: AdminProviderView[] = [
     role: 'provider',
     preferredLanguage: 'hi',
     isActive: true,
+    verificationStatus: 'VERIFIED',
+    activeBookingsCount: 0,
     categoryId: 'electrician',
     categoryTitleEn: 'Electrician',
     categoryTitleHi: 'बिजली मिस्त्री',
@@ -118,6 +120,8 @@ const mockProviders: AdminProviderView[] = [
     role: 'provider',
     preferredLanguage: 'en',
     isActive: true,
+    verificationStatus: 'VERIFIED',
+    activeBookingsCount: 0,
     categoryId: 'plumber',
     categoryTitleEn: 'Plumber',
     categoryTitleHi: 'नल / प्लंबर',
@@ -133,6 +137,8 @@ const mockProviders: AdminProviderView[] = [
     role: 'provider',
     preferredLanguage: 'hi',
     isActive: true,
+    verificationStatus: 'VERIFIED',
+    activeBookingsCount: 0,
     categoryId: 'electrician',
     categoryTitleEn: 'Electrician',
     categoryTitleHi: 'बिजली मिस्त्री',
@@ -140,6 +146,40 @@ const mockProviders: AdminProviderView[] = [
     isAvailable: false,
     rating: 4.2,
     createdAt: '2026-01-03T00:00:00Z',
+  },
+  {
+    id: 'p0000000-1111-2222-3333-444444444444',
+    phone: '9800055004',
+    fullName: 'Pending Electrician',
+    role: 'provider',
+    preferredLanguage: 'hi',
+    isActive: true,
+    verificationStatus: 'PENDING_VERIFICATION',
+    activeBookingsCount: 0,
+    categoryId: 'electrician',
+    categoryTitleEn: 'Electrician',
+    categoryTitleHi: 'बिजली मिस्त्री',
+    serviceArea: 'Chandil',
+    isAvailable: true,
+    rating: 5.0,
+    createdAt: '2026-01-04T00:00:00Z',
+  },
+  {
+    id: 'p0000000-1111-2222-3333-444444444445',
+    phone: '9800055005',
+    fullName: 'Busy Electrician',
+    role: 'provider',
+    preferredLanguage: 'hi',
+    isActive: true,
+    verificationStatus: 'VERIFIED',
+    activeBookingsCount: 1,
+    categoryId: 'electrician',
+    categoryTitleEn: 'Electrician',
+    categoryTitleHi: 'बिजली मिस्त्री',
+    serviceArea: 'Chandil',
+    isAvailable: true,
+    rating: 4.9,
+    createdAt: '2026-01-05T00:00:00Z',
   },
 ];
 
@@ -277,6 +317,27 @@ async function runTests() {
   assert(
     assignSelectedProviderId.value === null,
     'Assertion 12b: Inactive or unavailable provider is non-selectable'
+  );
+
+  // 12c. Unverified provider cannot be selected
+  setAssignSelectedProvider('p0000000-1111-2222-3333-444444444444');
+  assert(
+    assignSelectedProviderId.value === null,
+    'Assertion 12c: Pending verification provider is non-selectable'
+  );
+
+  // 12d. Busy provider cannot be selected
+  setAssignSelectedProvider('p0000000-1111-2222-3333-444444444445');
+  assert(
+    assignSelectedProviderId.value === null,
+    'Assertion 12d: Busy provider is non-selectable'
+  );
+
+  // 12e. Category mismatch provider cannot be selected
+  setAssignSelectedProvider('p0000000-1111-2222-3333-444444444442');
+  assert(
+    assignSelectedProviderId.value === null,
+    'Assertion 12e: Category mismatch provider is non-selectable'
   );
 
   // 13. Assign disabled before selection
@@ -494,6 +555,26 @@ async function runTests() {
     'Assertion 27: PROVIDER_NOT_FOUND handling'
   );
 
+  // 27b. PROVIDER_NOT_VERIFIED handling
+  globalThis.fetch = async () => ({
+    ok: false,
+    status: 400,
+    json: async () => ({
+      success: false,
+      error: {
+        code: 'PROVIDER_NOT_VERIFIED',
+        messageEn: 'Technician profile is not verified.',
+        messageHi: 'मिस्त्री प्रोफ़ाइल सत्यापित नहीं है।',
+      },
+    }),
+  } as any);
+
+  await submitAssignProvider();
+  assert(
+    assignError.value === en['admin.assign_provider_not_verified'],
+    'Assertion 27b: PROVIDER_NOT_VERIFIED handling'
+  );
+
   // 28. Retry after provider-list error
   globalThis.fetch = async () => ({
     ok: false,
@@ -516,7 +597,7 @@ async function runTests() {
 
   await (await import('../../client/src/state/admin-bookings')).loadAssignableProviders();
   assert(
-    assignProvidersError.value === null && assignableProviders.value.length === 3,
+    assignProvidersError.value === null && assignableProviders.value.length === 5,
     'Assertion 28b: Retry after provider-list error successfully recovers'
   );
 
@@ -555,6 +636,7 @@ async function runTests() {
     'admin.assign_provider_unavailable',
     'admin.assign_category_mismatch',
     'admin.assign_active_booking_exists',
+    'admin.assign_provider_not_verified',
   ];
 
   let keysMatch = true;

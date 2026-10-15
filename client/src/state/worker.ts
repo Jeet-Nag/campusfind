@@ -1,6 +1,6 @@
 import { signal } from '@preact/signals';
 import { ApiResponse, VerifiedWorkerSummary, WorkerVerificationStatus } from '@shared';
-import { authToken, refreshSession, handleSessionExpired } from './auth';
+import { authToken, refreshSession, handleSessionExpired, currentUser, selectedOnboardingRole } from './auth';
 import { currentLanguage } from './language';
 
 export interface DocumentImageState {
@@ -19,6 +19,12 @@ export const aadhaarFront = signal<DocumentImageState | null>(null);
 export const aadhaarBack = signal<DocumentImageState | null>(null);
 export const workerPhoto = signal<DocumentImageState | null>(null);
 
+export const rejectionReason = signal<string | null>(null);
+export const rejectedAt = signal<string | null>(null);
+export const existingHasFront = signal<boolean>(false);
+export const existingHasBack = signal<boolean>(false);
+export const existingHasPhoto = signal<boolean>(false);
+
 export const isSubmittingWorker = signal<boolean>(false);
 export const workerSubmitError = signal<string | null>(null);
 export const workerSubmitSuccess = signal<boolean>(false);
@@ -29,6 +35,8 @@ export const verifiedWorkersError = signal<string | null>(null);
 
 /**
  * Fetches the current user's worker onboarding / verification status from the backend.
+ * If backend reports VERIFIED, authoritatively refreshes session from /api/auth/me
+ * and validates that the user role is 'provider' before transitioning local worker status.
  */
 export async function fetchWorkerStatus(): Promise<WorkerVerificationStatus | null> {
   const token = authToken.value;
@@ -55,11 +63,14 @@ export async function fetchWorkerStatus(): Promise<WorkerVerificationStatus | nu
     const data: ApiResponse<{
       status: WorkerVerificationStatus;
       hasSubmitted: boolean;
+      fullName?: string | null;
       categoryId?: string | null;
       categoryTitleEn?: string | null;
       categoryTitleHi?: string | null;
       submittedAt?: string | null;
       verifiedAt?: string | null;
+      rejectionReason?: string | null;
+      rejectedAt?: string | null;
       hasAadhaarFront: boolean;
       hasAadhaarBack: boolean;
       hasPhoto: boolean;
@@ -67,11 +78,38 @@ export async function fetchWorkerStatus(): Promise<WorkerVerificationStatus | nu
 
     if (res.ok && data.success && data.data) {
       const status = data.data.status;
-      workerStatus.value = status;
-      if (status === 'VERIFIED') {
-        await refreshSession();
+      rejectionReason.value = data.data.rejectionReason || null;
+      rejectedAt.value = data.data.rejectedAt || null;
+      existingHasFront.value = !!data.data.hasAadhaarFront;
+      existingHasBack.value = !!data.data.hasAadhaarBack;
+      existingHasPhoto.value = !!data.data.hasPhoto;
+      if (data.data.categoryId) {
+        workerCategoryId.value = data.data.categoryId;
       }
-      return status;
+      if (data.data.fullName) {
+        workerFullName.value = data.data.fullName;
+      } else if (!workerFullName.value && currentUser.value?.fullName) {
+        workerFullName.value = currentUser.value.fullName;
+      }
+
+      if (status === 'VERIFIED') {
+        const refreshed = await refreshSession();
+        if (refreshed && currentUser.value?.role === 'provider') {
+          selectedOnboardingRole.value = null;
+          workerStatus.value = 'VERIFIED';
+          workerStatusError.value = null;
+          return 'VERIFIED';
+        } else {
+          workerStatusError.value = currentLanguage.value === 'hi'
+            ? 'सर्वर से प्रोफ़ाइल रीफ़्रेश करने में विफल। कृपया पुनः प्रयास करें।'
+            : 'Failed to refresh verified user profile. Please try again.';
+          return 'PENDING_VERIFICATION';
+        }
+      } else {
+        workerStatus.value = status;
+        workerStatusError.value = null;
+        return status;
+      }
     } else {
       workerStatusError.value = data.error?.messageEn || 'Failed to fetch status';
       return null;
@@ -117,14 +155,18 @@ export async function submitWorkerOnboarding(): Promise<boolean> {
     return false;
   }
 
-  if (!front || !back) {
+  const hasFront = !!front || existingHasFront.value;
+  const hasBack = !!back || existingHasBack.value;
+  const hasPhoto = !!photo || existingHasPhoto.value;
+
+  if (!hasFront || !hasBack) {
     workerSubmitError.value = currentLanguage.value === 'hi'
       ? 'कृपया आधार कार्ड के दोनों तरफ (सामने और पीछे) का फोटो दें।'
       : 'Please provide both Aadhaar Front and Aadhaar Back photos.';
     return false;
   }
 
-  if (!photo) {
+  if (!hasPhoto) {
     workerSubmitError.value = currentLanguage.value === 'hi'
       ? 'कृपया अपनी फोटो अपलोड करें।'
       : 'Please provide your photo.';
@@ -136,22 +178,30 @@ export async function submitWorkerOnboarding(): Promise<boolean> {
   workerSubmitSuccess.value = false;
 
   try {
+    const payload: Record<string, string> = {
+      fullName: name,
+      categoryId,
+    };
+    if (front) {
+      payload.aadhaarFrontBase64 = front.base64;
+      payload.aadhaarFrontMime = front.mime;
+    }
+    if (back) {
+      payload.aadhaarBackBase64 = back.base64;
+      payload.aadhaarBackMime = back.mime;
+    }
+    if (photo) {
+      payload.photoBase64 = photo.base64;
+      payload.photoMime = photo.mime;
+    }
+
     const res = await fetch('/api/worker/onboarding', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
         Authorization: `Bearer ${token}`,
       },
-      body: JSON.stringify({
-        fullName: name,
-        categoryId,
-        aadhaarFrontBase64: front.base64,
-        aadhaarFrontMime: front.mime,
-        aadhaarBackBase64: back.base64,
-        aadhaarBackMime: back.mime,
-        photoBase64: photo.base64,
-        photoMime: photo.mime,
-      }),
+      body: JSON.stringify(payload),
     });
 
     const body: ApiResponse<{
@@ -163,6 +213,11 @@ export async function submitWorkerOnboarding(): Promise<boolean> {
 
     if (res.ok && body.success && body.data) {
       workerStatus.value = 'PENDING_VERIFICATION';
+      rejectionReason.value = null;
+      rejectedAt.value = null;
+      existingHasFront.value = true;
+      existingHasBack.value = true;
+      existingHasPhoto.value = true;
       workerSubmitSuccess.value = true;
       // Clear sensitive memory immediately
       aadhaarFront.value = null;
@@ -222,6 +277,11 @@ export function resetWorkerSetup(): void {
   aadhaarFront.value = null;
   aadhaarBack.value = null;
   workerPhoto.value = null;
+  rejectionReason.value = null;
+  rejectedAt.value = null;
+  existingHasFront.value = false;
+  existingHasBack.value = false;
+  existingHasPhoto.value = false;
   workerSubmitError.value = null;
   workerSubmitSuccess.value = false;
 }

@@ -46,6 +46,12 @@ async function runProviderAssignedJobsTests() {
     provider2Phone,
     adminPhone,
   ]);
+  await pool.query('DELETE FROM provider_profiles WHERE user_id IN (SELECT id FROM users WHERE phone IN ($1, $2, $3, $4))', [
+    customerPhone,
+    provider1Phone,
+    provider2Phone,
+    adminPhone,
+  ]);
   await pool.query('DELETE FROM users WHERE phone IN ($1, $2, $3, $4)', [
     customerPhone,
     provider1Phone,
@@ -74,6 +80,13 @@ async function runProviderAssignedJobsTests() {
     [provider2Phone]
   );
   const provider2Id = prov2Rows[0].id;
+
+  await pool.query(
+    `INSERT INTO provider_profiles (user_id, category_id, service_area, is_available, verification_status)
+     VALUES ($1, 'electrician', 'Chandil', true, 'VERIFIED'),
+            ($2, 'electrician', 'Chandil', true, 'VERIFIED')`,
+    [provider1Id, provider2Id]
+  );
 
   const { rows: adminRows } = await pool.query<{ id: string }>(
     `INSERT INTO users (phone, role, full_name, preferred_language, is_active, token_version)
@@ -248,6 +261,9 @@ async function runProviderAssignedJobsTests() {
 
   console.log('\n--- 4. Accepting Assigned Jobs (POST /api/provider/jobs/:id/accept) ---');
 
+  // Complete earlier test bookings b3, b4 and b5 so providers have no active jobs in progress
+  await pool.query("UPDATE bookings SET status = 'BOOKING_COMPLETED' WHERE id IN ($1, $2, $3)", [b3Id, b4Id, b5Id]);
+
   // 4.1 Unauthorized provider (Provider 2) trying to accept Provider 1's assigned job b2
   const unauthorizedAccept = await app.inject({
     method: 'POST',
@@ -322,6 +338,9 @@ async function runProviderAssignedJobsTests() {
   );
   testAssert(b2LogCountRows[0].count === '1', '50. Zero duplicate audit logs created on repeated acceptance');
 
+  // Complete b2Id so Provider 1 has no active job before claiming b1Id
+  await pool.query("UPDATE bookings SET status = 'BOOKING_COMPLETED' WHERE id = $1", [b2Id]);
+
   // 4.6 Open broadcast claim verification
   const openClaimRes = await app.inject({
     method: 'POST',
@@ -335,6 +354,9 @@ async function runProviderAssignedJobsTests() {
   );
   testAssert(b1LogRows[0].from_status === 'SERVICE_REQUESTED', '52. Open claim audit log has from_status SERVICE_REQUESTED');
   testAssert(b1LogRows[0].to_status === 'PROVIDER_ACCEPTED', '53. Open claim audit log has to_status PROVIDER_ACCEPTED');
+
+  // Complete b1Id so Provider 1 has no lingering active job
+  await pool.query("UPDATE bookings SET status = 'BOOKING_COMPLETED' WHERE id = $1", [b1Id]);
 
   console.log('\n--- 5. Declining / Relinquishing Assigned Jobs (POST /api/provider/jobs/:id/reject) ---');
 
@@ -407,13 +429,16 @@ async function runProviderAssignedJobsTests() {
     to_status: string;
     changed_by: string;
     notes: string;
-  }>('SELECT from_status, to_status, changed_by, notes FROM booking_status_logs WHERE booking_id = $1 ORDER BY id DESC LIMIT 1', [b6Id]);
+  }>('SELECT from_status, to_status, changed_by, notes FROM booking_status_logs WHERE booking_id = $1 ORDER BY id ASC', [b6Id]);
 
-  testAssert(b6LogRows.length === 1, '64. Audit log entry recorded for decline');
-  testAssert(b6LogRows[0].from_status === 'PROVIDER_ASSIGNED', '65. Audit log from_status is strictly PROVIDER_ASSIGNED');
-  testAssert(b6LogRows[0].to_status === 'SERVICE_REQUESTED', '66. Audit log to_status is strictly SERVICE_REQUESTED');
-  testAssert(b6LogRows[0].changed_by === provider1Id, '67. Audit log changed_by is Provider 1');
-  testAssert(b6LogRows[0].notes === 'Technician declined assigned job; returned to broadcast', '68. Audit notes document relinquished assigned job');
+  testAssert(b6LogRows.length === 2, '64. Audit log entries recorded for decline and recovery');
+  testAssert(b6LogRows[0].from_status === 'PROVIDER_ASSIGNED', '65. Audit log 1 from_status is strictly PROVIDER_ASSIGNED');
+  testAssert(b6LogRows[0].to_status === 'REJECTED_BY_PROVIDER', '66. Audit log 1 to_status is strictly REJECTED_BY_PROVIDER');
+  testAssert(b6LogRows[0].changed_by === provider1Id, '67. Audit log 1 changed_by is Provider 1');
+  testAssert(b6LogRows[0].notes === 'Technician declined assigned job', '68. Audit notes document declined assigned job');
+  testAssert(b6LogRows[1].from_status === 'REJECTED_BY_PROVIDER', '68a. Audit log 2 from_status is strictly REJECTED_BY_PROVIDER');
+  testAssert(b6LogRows[1].to_status === 'SERVICE_REQUESTED', '68b. Audit log 2 to_status is strictly SERVICE_REQUESTED');
+  testAssert(b6LogRows[1].notes === 'Recovered to open broadcast pool', '68c. Audit notes document recovered booking');
 
   // 5.6 Feed re-availability for other providers
   const feedAfterDeclineRes = await app.inject({
@@ -443,6 +468,9 @@ async function runProviderAssignedJobsTests() {
 
   console.log('\n--- 6. Concurrency & Race Conditions ---');
 
+  // Complete b6Id so Provider 2 has no active job
+  await pool.query("UPDATE bookings SET status = 'BOOKING_COMPLETED' WHERE id = $1", [b6Id]);
+
   // 6.1 Concurrent accept on open job by two providers
   const raceKey1 = `race-open-${Date.now()}`;
   const { rows: race1Rows } = await pool.query<{ id: string }>(
@@ -468,6 +496,9 @@ async function runProviderAssignedJobsTests() {
   );
   testAssert(race1DbRows[0].status === 'PROVIDER_ACCEPTED', '73. Race job status is strictly PROVIDER_ACCEPTED');
   testAssert(race1DbRows[0].provider_id === provider1Id || race1DbRows[0].provider_id === provider2Id, '74. Exactly one provider claimed race job');
+
+  // Complete raceJob1Id so winning provider has no lingering active job
+  await pool.query("UPDATE bookings SET status = 'BOOKING_COMPLETED' WHERE id = $1", [raceJob1Id]);
 
   // 6.2 Concurrent accept by assigned provider (Provider 1) and unassigned provider (Provider 2)
   const raceKey2 = `race-asgn-${Date.now()}`;
@@ -521,6 +552,12 @@ async function runProviderAssignedJobsTests() {
     adminPhone,
   ]);
   await pool.query('DELETE FROM bookings WHERE customer_id IN (SELECT id FROM users WHERE phone IN ($1, $2, $3, $4))', [
+    customerPhone,
+    provider1Phone,
+    provider2Phone,
+    adminPhone,
+  ]);
+  await pool.query('DELETE FROM provider_profiles WHERE user_id IN (SELECT id FROM users WHERE phone IN ($1, $2, $3, $4))', [
     customerPhone,
     provider1Phone,
     provider2Phone,

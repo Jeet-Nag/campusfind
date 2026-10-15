@@ -319,7 +319,7 @@ export async function registerPasskey(
 }
 
 /**
- * Validates active session against /api/auth/me to verify tokenVersion.
+ * Validates active session against /api/auth/me to verify tokenVersion and refresh authoritative user profile.
  */
 export async function refreshSession(): Promise<boolean> {
   const token = authToken.value;
@@ -329,8 +329,12 @@ export async function refreshSession(): Promise<boolean> {
     const res = await fetch('/api/auth/me', {
       headers: { Authorization: `Bearer ${token}` },
     });
+    if (res.status === 401) {
+      handleSessionExpired();
+      return false;
+    }
     const body: ApiResponse<{ user: User }> = await res.json();
-    if (res.ok && body.success && body.data) {
+    if (res.ok && body.success && body.data?.user) {
       currentUser.value = body.data.user;
       try {
         localStorage.setItem(USER_KEY, JSON.stringify(body.data.user));
@@ -338,12 +342,10 @@ export async function refreshSession(): Promise<boolean> {
         // Ignore
       }
       return true;
-    } else {
-      handleSessionExpired();
-      return false;
     }
+    return false;
   } catch {
-    return !!currentUser.value;
+    return false;
   }
 }
 

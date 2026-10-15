@@ -2,7 +2,7 @@ export type UserRole = 'customer' | 'provider' | 'admin';
 
 export type SupportedLanguage = 'en' | 'hi';
 
-export type WorkerVerificationStatus = 'PENDING_VERIFICATION' | 'VERIFIED';
+export type WorkerVerificationStatus = 'PENDING_VERIFICATION' | 'VERIFIED' | 'REJECTED';
 
 export interface User {
   id: string;
@@ -11,6 +11,7 @@ export interface User {
   fullName: string | null;
   preferredLanguage: SupportedLanguage;
   isActive: boolean;
+  isTest?: boolean;
   createdAt: string;
   updatedAt: string;
 }
@@ -25,6 +26,9 @@ export interface ProviderProfile {
   submittedAt?: string | null;
   verifiedAt?: string | null;
   verifiedBy?: string | null;
+  rejectionReason?: string | null;
+  rejectedAt?: string | null;
+  rejectedBy?: string | null;
   createdAt: string;
 }
 
@@ -56,10 +60,13 @@ export interface AdminProviderView {
   verificationStatus?: WorkerVerificationStatus;
   submittedAt?: string | null;
   verifiedAt?: string | null;
+  rejectionReason?: string | null;
+  rejectedAt?: string | null;
   createdAt: string;
   hasAadhaarFront?: boolean;
   hasAadhaarBack?: boolean;
   hasPhoto?: boolean;
+  activeBookingsCount?: number;
 }
 
 export interface VerifiedWorkerSummary {
@@ -75,10 +82,48 @@ export interface VerifiedWorkerSummary {
 export interface WorkerOnboardingInput {
   fullName: string;
   categoryId: string;
-  aadhaarFrontBase64: string;
-  aadhaarFrontMime: string;
-  aadhaarBackBase64: string;
-  aadhaarBackMime: string;
-  photoBase64: string;
-  photoMime: string;
+  aadhaarFrontBase64?: string;
+  aadhaarFrontMime?: string;
+  aadhaarBackBase64?: string;
+  aadhaarBackMime?: string;
+  photoBase64?: string;
+  photoMime?: string;
+}
+
+export interface AdminUserBookingCounts {
+  total: number;
+  active: number;
+  completed: number;
+  cancelled: number;
+}
+
+export interface AdminUserView {
+  id: string;
+  phone: string;
+  role: UserRole;
+  fullName: string | null;
+  preferredLanguage: SupportedLanguage;
+  isActive: boolean;
+  isTest: boolean;
+  createdAt: string;
+  updatedAt: string;
+  workerVerificationStatus?: WorkerVerificationStatus | null;
+  categoryTitleEn?: string | null;
+  categoryTitleHi?: string | null;
+  bookingCounts: AdminUserBookingCounts;
+}
+
+export interface TestCleanupPreview {
+  testUsersCount: number;
+  testBookingsCount: number;
+  testStatusLogsCount: number;
+  testCustomersCount: number;
+  testProvidersCount: number;
+  canCleanup: boolean;
+}
+
+export interface TestCleanupResult {
+  deletedUsersCount: number;
+  deletedBookingsCount: number;
+  deletedStatusLogsCount: number;
 }

@@ -560,6 +560,200 @@ async function runWorkerOnboardingTestSuite() {
     });
     assert(pendingFilterRes.statusCode === 200, 'T.3 Admin can filter by PENDING_VERIFICATION');
 
+    // ─── U. Worker Rejection & Partial Document Resubmission Workflow ────────
+    console.log('\n--- U. Worker Rejection & Partial Document Resubmission Workflow ---');
+    // U.1: Non-admin or unauthenticated cannot reject worker
+    const unauthRejectRes = await app.inject({
+      method: 'POST',
+      url: `/api/admin/providers/${testWorker1Id}/reject`,
+      payload: { reason: 'Invalid documents' },
+    });
+    assert(unauthRejectRes.statusCode === 401, 'U.1 Unauthenticated reject returns 401 Unauthorized');
+
+    const customerRejectRes = await app.inject({
+      method: 'POST',
+      url: `/api/admin/providers/${testWorker1Id}/reject`,
+      headers: { authorization: `Bearer ${customerToken}` },
+      payload: { reason: 'Invalid documents' },
+    });
+    assert(customerRejectRes.statusCode === 403, 'U.1 Customer reject attempt returns 403 Forbidden');
+
+    // U.2: Validation on rejection reason (empty or > 500 chars)
+    const emptyReasonRes = await app.inject({
+      method: 'POST',
+      url: `/api/admin/providers/${testWorker1Id}/reject`,
+      headers: { authorization: `Bearer ${adminToken}` },
+      payload: { reason: '   ' },
+    });
+    assert(emptyReasonRes.statusCode === 400, 'U.2 Empty rejection reason rejected with 400');
+    assert(emptyReasonRes.json().error.code === 'VALIDATION_ERROR', 'U.2 Returns VALIDATION_ERROR');
+
+    const longReasonRes = await app.inject({
+      method: 'POST',
+      url: `/api/admin/providers/${testWorker1Id}/reject`,
+      headers: { authorization: `Bearer ${adminToken}` },
+      payload: { reason: 'A'.repeat(501) },
+    });
+    assert(longReasonRes.statusCode === 400, 'U.2 Reason > 500 chars rejected with 400');
+
+    // U.3: Successful admin rejection
+    const rejectReasonText = 'Aadhaar front is blurry. Please upload a clear photo.';
+    const validRejectRes = await app.inject({
+      method: 'POST',
+      url: `/api/admin/providers/${testWorker1Id}/reject`,
+      headers: { authorization: `Bearer ${adminToken}` },
+      payload: { reason: rejectReasonText },
+    });
+    assert(validRejectRes.statusCode === 200, 'U.3 Admin rejects worker -> 200 OK');
+    assert(validRejectRes.json().success === true, 'U.3 Success is true');
+    assert(validRejectRes.json().data.provider.verificationStatus === 'REJECTED', 'U.3 Response status is REJECTED');
+
+    // Verify DB columns
+    const { rows: rejectedProfileRows } = await pool.query<{
+      verification_status: string;
+      rejection_reason: string;
+      rejected_at: Date;
+      rejected_by: string;
+    }>(
+      'SELECT verification_status, rejection_reason, rejected_at, rejected_by FROM provider_profiles WHERE user_id = $1',
+      [testWorker1Id]
+    );
+    assert(rejectedProfileRows[0].verification_status === 'REJECTED', 'U.3 DB verification_status is REJECTED');
+    assert(rejectedProfileRows[0].rejection_reason === rejectReasonText, 'U.3 DB rejection_reason matches');
+    assert(rejectedProfileRows[0].rejected_at !== null, 'U.3 DB rejected_at is populated');
+    assert(rejectedProfileRows[0].rejected_by === testAdminId, 'U.3 DB rejected_by is admin ID');
+
+    // Verify role demoted and token_version incremented
+    const { rows: demotedUserRows } = await pool.query<{
+      role: string;
+      token_version: number;
+    }>('SELECT role, token_version FROM users WHERE id = $1', [testWorker1Id]);
+    assert(demotedUserRows[0].role === 'customer', 'U.3 User role demoted to customer on rejection');
+    assert(demotedUserRows[0].token_version === 2, 'U.3 token_version incremented on rejection');
+
+    // U.4: Token revocation check - old token rejected with 401
+    const oldTokenStatusRes = await app.inject({
+      method: 'GET',
+      url: '/api/worker/status',
+      headers: { authorization: `Bearer ${worker1Token}` },
+    });
+    assert(oldTokenStatusRes.statusCode === 401, 'U.4 Old JWT token rejected with 401 after token_version increment');
+
+    // U.5: Fresh token for rejected worker can check status
+    const worker1FreshToken = app.jwt.sign({
+      id: testWorker1Id,
+      phone: testWorker1Phone,
+      role: 'customer',
+      tokenVersion: 2,
+    });
+    const freshStatusRes = await app.inject({
+      method: 'GET',
+      url: '/api/worker/status',
+      headers: { authorization: `Bearer ${worker1FreshToken}` },
+    });
+    assert(freshStatusRes.statusCode === 200, 'U.5 Worker status returns 200 with fresh token');
+    const freshStatusData = freshStatusRes.json().data;
+    assert(freshStatusData.status === 'REJECTED', 'U.5 Status is REJECTED');
+    assert(freshStatusData.rejectionReason === rejectReasonText, 'U.5 rejectionReason matches');
+    assert(freshStatusData.rejectedAt !== null, 'U.5 rejectedAt is populated');
+    assert(freshStatusData.hasAadhaarFront === true, 'U.5 hasAadhaarFront is true');
+    assert(freshStatusData.hasAadhaarBack === true, 'U.5 hasAadhaarBack is true');
+    assert(freshStatusData.hasPhoto === true, 'U.5 hasPhoto is true');
+    assert(freshStatusData.fullName === 'Worker One Electrician', 'U.5 fullName is returned');
+
+    // Rejected worker does NOT appear in customer verified list
+    const customerListAfterReject = await app.inject({
+      method: 'GET',
+      url: '/api/workers/verified',
+    });
+    const workerInCustList = customerListAfterReject.json().data.workers.some((w: any) => w.id === testWorker1Id);
+    assert(!workerInCustList, 'U.5 Rejected worker does NOT appear in customer verified list');
+
+    // Admin can list rejected workers
+    const adminRejectedList = await app.inject({
+      method: 'GET',
+      url: '/api/admin/providers?status=REJECTED',
+      headers: { authorization: `Bearer ${adminToken}` },
+    });
+    assert(adminRejectedList.statusCode === 200, 'U.5 Admin can filter by status=REJECTED');
+    const rejectedProv = adminRejectedList.json().data.providers.find((p: any) => p.id === testWorker1Id);
+    assert(!!rejectedProv, 'U.5 Rejected worker found in admin filter');
+    assert(rejectedProv.rejectionReason === rejectReasonText, 'U.5 rejectionReason exposed in admin view');
+
+    // U.6: Partial resubmission - Worker submits ONLY new Aadhaar Front
+    // Replace with a new PNG image
+    const newAadhaarFrontBase64 = createValidPngBase64();
+    const resubmitRes = await app.inject({
+      method: 'POST',
+      url: '/api/worker/onboarding',
+      headers: { authorization: `Bearer ${worker1FreshToken}` },
+      payload: {
+        fullName: 'Worker One Corrected',
+        categoryId: 'electrician',
+        aadhaarFrontBase64: newAadhaarFrontBase64,
+        aadhaarFrontMime: 'image/png',
+        // aadhaarBack and photo omitted!
+      },
+    });
+    assert(resubmitRes.statusCode === 200, 'U.6 Partial resubmission returns 200 OK');
+    assert(resubmitRes.json().success === true, 'U.6 Resubmission success is true');
+    assert(resubmitRes.json().data.status === 'PENDING_VERIFICATION', 'U.6 Status transitions to PENDING_VERIFICATION');
+
+    // Verify DB state after resubmission
+    const { rows: resubProfileRows } = await pool.query<{
+      verification_status: string;
+      rejection_reason: string | null;
+      rejected_at: Date | null;
+      rejected_by: string | null;
+      aadhaar_front_mime: string;
+      has_back: boolean;
+      has_photo: boolean;
+    }>(
+      `SELECT
+         verification_status, rejection_reason, rejected_at, rejected_by,
+         aadhaar_front_mime,
+         (aadhaar_back_data IS NOT NULL) as has_back,
+         (photo_data IS NOT NULL) as has_photo
+       FROM provider_profiles WHERE user_id = $1`,
+      [testWorker1Id]
+    );
+    assert(resubProfileRows[0].verification_status === 'PENDING_VERIFICATION', 'U.6 DB verification_status is PENDING_VERIFICATION');
+    assert(resubProfileRows[0].rejection_reason === null, 'U.6 DB rejection_reason cleared to NULL');
+    assert(resubProfileRows[0].rejected_at === null, 'U.6 DB rejected_at cleared to NULL');
+    assert(resubProfileRows[0].rejected_by === null, 'U.6 DB rejected_by cleared to NULL');
+    assert(resubProfileRows[0].aadhaar_front_mime === 'image/png', 'U.6 New Aadhaar Front updated to image/png');
+    assert(resubProfileRows[0].has_back === true, 'U.6 Existing Aadhaar Back preserved intact');
+    assert(resubProfileRows[0].has_photo === true, 'U.6 Existing Photo preserved intact');
+
+    // U.7: Worker status after resubmission
+    const afterResubStatus = await app.inject({
+      method: 'GET',
+      url: '/api/worker/status',
+      headers: { authorization: `Bearer ${worker1FreshToken}` },
+    });
+    assert(afterResubStatus.statusCode === 200, 'U.7 Status returns 200 after resubmission');
+    assert(afterResubStatus.json().data.status === 'PENDING_VERIFICATION', 'U.7 Status is PENDING_VERIFICATION');
+    assert(afterResubStatus.json().data.rejectionReason === null, 'U.7 rejectionReason is null');
+
+    // U.8: Admin re-review and approval
+    const approveResubRes = await app.inject({
+      method: 'POST',
+      url: `/api/admin/providers/${testWorker1Id}/verify`,
+      headers: { authorization: `Bearer ${adminToken}` },
+    });
+    assert(approveResubRes.statusCode === 200, 'U.8 Admin approves resubmitted worker -> 200 OK');
+    assert(approveResubRes.json().data.provider.verificationStatus === 'VERIFIED', 'U.8 Status is VERIFIED');
+    assert(approveResubRes.json().data.provider.role === 'provider', 'U.8 Role is provider');
+
+    const { rows: finalProfileRows } = await pool.query<{
+      verification_status: string;
+      rejection_reason: string | null;
+      verified_by: string;
+    }>('SELECT verification_status, rejection_reason, verified_by FROM provider_profiles WHERE user_id = $1', [testWorker1Id]);
+    assert(finalProfileRows[0].verification_status === 'VERIFIED', 'U.8 DB status is VERIFIED');
+    assert(finalProfileRows[0].rejection_reason === null, 'U.8 DB rejection_reason remains NULL');
+    assert(finalProfileRows[0].verified_by === testAdminId, 'U.8 DB verified_by is admin ID');
+
     // Cleanup test users
     await pool.query('DELETE FROM users WHERE phone IN ($1, $2, $3, $4)', [
       testAdminPhone,

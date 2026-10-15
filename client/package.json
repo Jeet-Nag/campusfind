@@ -6,6 +6,9 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc && vite build",
+    "build:web": "tsc && vite build",
+    "build:android:staging": "tsc && vite build --mode staging",
+    "build:android:production": "tsc && vite build --mode production",
     "preview": "vite preview"
   },
   "dependencies": {

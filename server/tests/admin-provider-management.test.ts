@@ -604,7 +604,15 @@ async function runAdminProviderTests() {
     const conflictProvId = JSON.parse(conflictCreate.payload).data.provider.id;
 
     // Test each active status blocks deactivation
-    const activeStatuses = ['PROVIDER_ACCEPTED', 'PROVIDER_ON_THE_WAY', 'SERVICE_STARTED', 'PAYMENT_PENDING'] as const;
+    const activeStatuses = [
+      'PROVIDER_ASSIGNED',
+      'PROVIDER_ACCEPTED',
+      'PROVIDER_ON_THE_WAY',
+      'SERVICE_STARTED',
+      'SERVICE_COMPLETED',
+      'PAYMENT_PENDING',
+      'PAYMENT_COLLECTED',
+    ] as const;
 
     for (const activeStatus of activeStatuses) {
       // Create a test booking assigned to this provider in activeStatus

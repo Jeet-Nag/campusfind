@@ -11,6 +11,7 @@ interface DocumentUploadCardProps {
   onRetake: () => void;
   isPhoto?: boolean;
   required?: boolean;
+  hasExisting?: boolean;
 }
 
 export function DocumentUploadCard({
@@ -21,6 +22,7 @@ export function DocumentUploadCard({
   onRetake,
   isPhoto = false,
   required = true,
+  hasExisting = false,
 }: DocumentUploadCardProps) {
   const [cameraActive, setCameraActive] = useState(false);
   const [facingMode, setFacingMode] = useState<'user' | 'environment'>(isPhoto ? 'user' : 'environment');
@@ -209,12 +211,17 @@ export function DocumentUploadCard({
           {subtitle && <p class="text-xs text-text-sub mt-0.5">{subtitle}</p>}
         </div>
 
-        {imageState && (
+        {imageState ? (
           <span class="inline-flex items-center space-x-1 px-2 py-0.5 rounded bg-green-100 text-action-active text-xs font-bold border border-green-200">
             <CheckIcon size={14} class="text-action" />
             <span>{lang === 'hi' ? 'तैयार' : 'Ready'}</span>
           </span>
-        )}
+        ) : hasExisting ? (
+          <span class="inline-flex items-center space-x-1 px-2 py-0.5 rounded bg-blue-50 text-brand text-xs font-bold border border-blue-200">
+            <CheckIcon size={14} class="text-brand" />
+            <span>{t('onboarding.doc_on_file')}</span>
+          </span>
+        ) : null}
       </div>
 
       {cameraError && (
@@ -249,6 +256,12 @@ export function DocumentUploadCard({
       ) : (
         /* State B: No Image Selected Yet -> Action Buttons */
         <div class="space-y-2">
+          {hasExisting && (
+            <div class="p-2.5 rounded bg-blue-50/70 border border-blue-200 text-text-sub text-xs flex items-center justify-between">
+              <span class="font-medium text-brand">{t('onboarding.doc_on_file')}</span>
+              <span class="text-[11px] text-text-sub">{t('onboarding.doc_replace_hint')}</span>
+            </div>
+          )}
           <div class="grid grid-cols-2 gap-2.5">
             <button
               type="button"

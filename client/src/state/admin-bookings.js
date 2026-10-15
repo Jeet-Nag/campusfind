@@ -518,7 +518,11 @@ export async function loadAssignableProviders() {
  */
 export function setAssignSelectedProvider(providerId) {
     const p = assignableProviders.value.find((prov) => prov.id === providerId);
-    if (p && (!p.isActive || !p.isAvailable)) {
+    const detail = selectedBookingDetail.value;
+    const isMatchingCategory = detail ? p?.categoryId === detail.category.id : true;
+    const isVerified = p?.verificationStatus === 'VERIFIED';
+    const isBusy = (p?.activeBookingsCount ?? 0) > 0;
+    if (p && (!p.isActive || !p.isAvailable || !isMatchingCategory || !isVerified || isBusy)) {
         return;
     }
     assignSelectedProviderId.value = providerId;
@@ -586,6 +590,9 @@ export async function submitAssignProvider() {
             }
             else if (errCode === 'PROVIDER_NOT_FOUND') {
                 assignError.value = t('admin.assign_provider_not_found');
+            }
+            else if (errCode === 'PROVIDER_NOT_VERIFIED') {
+                assignError.value = t('admin.assign_provider_not_verified');
             }
             else {
                 assignError.value = currentLanguage.value === 'hi'

@@ -1,5 +1,5 @@
 import { db } from '../db';
-import { AdminProviderView, WorkerVerificationStatus } from '@shared';
+import { AdminProviderView, WorkerVerificationStatus, ACTIVE_BOOKING_STATUSES } from '@shared';
 import { workerService } from './worker.service';
 
 const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -19,7 +19,7 @@ export class AdminProviderError extends Error {
 export interface ListProvidersFilter {
   categoryId?: string;
   isActive?: boolean;
-  verificationStatus?: 'PENDING_VERIFICATION' | 'VERIFIED';
+  verificationStatus?: 'PENDING_VERIFICATION' | 'VERIFIED' | 'REJECTED';
 }
 
 export interface CreateProviderInput {
@@ -53,10 +53,13 @@ interface RawProviderDbRow {
   verificationStatus: WorkerVerificationStatus;
   submittedAt: Date | null;
   verifiedAt: Date | null;
+  rejectionReason?: string | null;
+  rejectedAt?: Date | null;
   createdAt: Date;
   hasAadhaarFront: boolean;
   hasAadhaarBack: boolean;
   hasPhoto: boolean;
+  activeBookingsCount?: number | string;
 }
 
 function mapRawRow(row: RawProviderDbRow): AdminProviderView {
@@ -76,10 +79,13 @@ function mapRawRow(row: RawProviderDbRow): AdminProviderView {
     verificationStatus: row.verificationStatus || 'VERIFIED',
     submittedAt: row.submittedAt ? (row.submittedAt instanceof Date ? row.submittedAt.toISOString() : String(row.submittedAt)) : null,
     verifiedAt: row.verifiedAt ? (row.verifiedAt instanceof Date ? row.verifiedAt.toISOString() : String(row.verifiedAt)) : null,
+    rejectionReason: row.rejectionReason || null,
+    rejectedAt: row.rejectedAt ? (row.rejectedAt instanceof Date ? row.rejectedAt.toISOString() : String(row.rejectedAt)) : null,
     createdAt: row.createdAt instanceof Date ? row.createdAt.toISOString() : String(row.createdAt),
     hasAadhaarFront: !!row.hasAadhaarFront,
     hasAadhaarBack: !!row.hasAadhaarBack,
     hasPhoto: !!row.hasPhoto,
+    activeBookingsCount: row.activeBookingsCount !== undefined ? parseInt(String(row.activeBookingsCount), 10) : 0,
   };
 }
 
@@ -105,7 +111,7 @@ export class AdminProviderService {
       throw new AdminProviderError('DATABASE_UNAVAILABLE', 'Database is not available.', 'डेटाबेस अनुपलब्ध है।', 500);
     }
 
-    const conditions: string[] = ["(u.role = 'provider' OR p.verification_status = 'PENDING_VERIFICATION')"];
+    const conditions: string[] = ["(u.role = 'provider' OR p.verification_status IN ('PENDING_VERIFICATION', 'REJECTED'))"];
     const values: any[] = [];
     let paramIndex = 1;
 
@@ -141,10 +147,18 @@ export class AdminProviderService {
         p.verification_status as "verificationStatus",
         p.submitted_at as "submittedAt",
         p.verified_at as "verifiedAt",
+        p.rejection_reason as "rejectionReason",
+        p.rejected_at as "rejectedAt",
         u.created_at as "createdAt",
         (p.aadhaar_front_data IS NOT NULL) as "hasAadhaarFront",
         (p.aadhaar_back_data IS NOT NULL) as "hasAadhaarBack",
-        (p.photo_data IS NOT NULL) as "hasPhoto"
+        (p.photo_data IS NOT NULL) as "hasPhoto",
+        (
+          SELECT COUNT(*)::int
+          FROM bookings b
+          WHERE b.provider_id = u.id
+            AND b.status IN ('PROVIDER_ASSIGNED', 'PROVIDER_ACCEPTED', 'PROVIDER_ON_THE_WAY', 'SERVICE_STARTED', 'SERVICE_COMPLETED', 'PAYMENT_PENDING', 'PAYMENT_COLLECTED')
+        ) as "activeBookingsCount"
       FROM users u
       JOIN provider_profiles p ON u.id = p.user_id
       JOIN service_categories sc ON p.category_id = sc.id
@@ -184,14 +198,22 @@ export class AdminProviderService {
         p.verification_status as "verificationStatus",
         p.submitted_at as "submittedAt",
         p.verified_at as "verifiedAt",
+        p.rejection_reason as "rejectionReason",
+        p.rejected_at as "rejectedAt",
         u.created_at as "createdAt",
         (p.aadhaar_front_data IS NOT NULL) as "hasAadhaarFront",
         (p.aadhaar_back_data IS NOT NULL) as "hasAadhaarBack",
-        (p.photo_data IS NOT NULL) as "hasPhoto"
+        (p.photo_data IS NOT NULL) as "hasPhoto",
+        (
+          SELECT COUNT(*)::int
+          FROM bookings b
+          WHERE b.provider_id = u.id
+            AND b.status IN ('PROVIDER_ASSIGNED', 'PROVIDER_ACCEPTED', 'PROVIDER_ON_THE_WAY', 'SERVICE_STARTED', 'SERVICE_COMPLETED', 'PAYMENT_PENDING', 'PAYMENT_COLLECTED')
+        ) as "activeBookingsCount"
       FROM users u
       JOIN provider_profiles p ON u.id = p.user_id
       JOIN service_categories sc ON p.category_id = sc.id
-      WHERE u.id = $1 AND (u.role = 'provider' OR p.verification_status = 'PENDING_VERIFICATION')
+      WHERE u.id = $1 AND (u.role = 'provider' OR p.verification_status IN ('PENDING_VERIFICATION', 'REJECTED'))
     `;
 
     const { rows } = await pool.query<RawProviderDbRow>(query, [id]);
@@ -209,6 +231,10 @@ export class AdminProviderService {
 
   public async verifyWorker(workerId: string, adminId: string): Promise<AdminProviderView> {
     return await workerService.verifyWorker(workerId, adminId);
+  }
+
+  public async rejectWorker(workerId: string, adminId: string, reason: string): Promise<AdminProviderView> {
+    return await workerService.rejectWorker(workerId, adminId, reason);
   }
 
   public async getAadhaarDocument(providerId: string, side: 'front' | 'back'): Promise<{ buffer: Buffer; mimeType: string }> {
@@ -270,8 +296,8 @@ export class AdminProviderService {
       const newUserId = newUsers[0].id;
 
       await client.query(
-        `INSERT INTO provider_profiles (user_id, category_id, service_area, is_available, rating)
-         VALUES ($1, $2, $3, true, 5.00)`,
+        `INSERT INTO provider_profiles (user_id, category_id, service_area, is_available, verification_status, rating)
+         VALUES ($1, $2, $3, true, 'VERIFIED', 5.00)`,
         [newUserId, input.categoryId, serviceArea]
       );
 
@@ -436,7 +462,7 @@ export class AdminProviderService {
         const { rows: activeBookings } = await client.query<{ id: string; status: string }>(
           `SELECT id, status FROM bookings
            WHERE provider_id = $1
-             AND status IN ('PROVIDER_ACCEPTED', 'PROVIDER_ON_THE_WAY', 'SERVICE_STARTED', 'PAYMENT_PENDING')
+             AND status IN ('PROVIDER_ASSIGNED', 'PROVIDER_ACCEPTED', 'PROVIDER_ON_THE_WAY', 'SERVICE_STARTED', 'SERVICE_COMPLETED', 'PAYMENT_PENDING', 'PAYMENT_COLLECTED')
            LIMIT 1`,
           [id]
         );

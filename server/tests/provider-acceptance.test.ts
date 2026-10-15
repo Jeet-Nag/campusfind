@@ -46,6 +46,12 @@ async function runProviderAcceptanceTests() {
     provider2Phone,
     adminPhone,
   ]);
+  await pool.query('DELETE FROM provider_profiles WHERE user_id IN (SELECT id FROM users WHERE phone IN ($1, $2, $3, $4))', [
+    customerPhone,
+    provider1Phone,
+    provider2Phone,
+    adminPhone,
+  ]);
   await pool.query('DELETE FROM users WHERE phone IN ($1, $2, $3, $4)', [
     customerPhone,
     provider1Phone,
@@ -68,12 +74,24 @@ async function runProviderAcceptanceTests() {
   );
   const provider1Id = p1Rows[0].id;
 
+  await pool.query(
+    `INSERT INTO provider_profiles (user_id, category_id, service_area, is_available, verification_status)
+     VALUES ($1, 'electrician', 'Chandil', true, 'VERIFIED')`,
+    [provider1Id]
+  );
+
   const { rows: p2Rows } = await pool.query<{ id: string }>(
     `INSERT INTO users (phone, role, full_name, preferred_language, is_active, token_version)
      VALUES ($1, 'provider', 'Dinesh Plumber', 'en', true, 1) RETURNING id`,
     [provider2Phone]
   );
   const provider2Id = p2Rows[0].id;
+
+  await pool.query(
+    `INSERT INTO provider_profiles (user_id, category_id, service_area, is_available, verification_status)
+     VALUES ($1, 'plumber', 'Chandil', true, 'VERIFIED')`,
+    [provider2Id]
+  );
 
   const { rows: adminRows } = await pool.query<{ id: string }>(
     `INSERT INTO users (phone, role, full_name, preferred_language, is_active, token_version)
@@ -122,6 +140,25 @@ async function runProviderAcceptanceTests() {
     headers: { authorization: `Bearer ${adminToken}` },
   });
   testAssert(adminRes.statusCode === 403, 'Admin role cannot accept jobs (403 Forbidden) (Requirement 3)');
+
+  // 1.3b Category Mismatch: Dinesh Plumber cannot accept Electrician job
+  const mismatchRes = await app.inject({
+    method: 'POST',
+    url: `/api/provider/jobs/${b1Id}/accept`,
+    headers: { authorization: `Bearer ${provider2Token}` },
+  });
+  testAssert(mismatchRes.statusCode === 400, 'Provider with mismatched category cannot accept job (400 CATEGORY_MISMATCH)');
+  const mismatchBody = JSON.parse(mismatchRes.payload);
+  testAssert(mismatchBody.error?.code === 'CATEGORY_MISMATCH', 'Error code is strictly CATEGORY_MISMATCH');
+  testAssert(mismatchBody.error?.messageEn === 'Provider category does not match booking category.', 'Bilingual English message matches contract');
+  testAssert(mismatchBody.error?.messageHi === 'मिस्त्री की श्रेणी बुकिंग श्रेणी से मेल नहीं खाती।', 'Bilingual Hindi message matches contract');
+
+  const { rows: mismatchDbCheck } = await pool.query<{ status: string; provider_id: string | null }>(
+    'SELECT status, provider_id FROM bookings WHERE id = $1',
+    [b1Id]
+  );
+  testAssert(mismatchDbCheck[0].status === 'SERVICE_REQUESTED', 'Booking status remains SERVICE_REQUESTED after mismatched category attempt');
+  testAssert(mismatchDbCheck[0].provider_id === null, 'No provider assigned after mismatched category attempt');
 
   // 1.4 Attempting to spoof providerId in body is ignored
   const spoofRes = await app.inject({
@@ -315,6 +352,9 @@ async function runProviderAcceptanceTests() {
 
   console.log('\n--- 6. CONCURRENCY — CRITICAL (Requirements 26-30) ---');
 
+  // Complete earlier booking b1Id so provider1 has no active booking in progress
+  await pool.query("UPDATE bookings SET status = 'BOOKING_COMPLETED' WHERE id = $1", [b1Id]);
+
   // Create a brand new unassigned SERVICE_REQUESTED booking for the race condition test
   const raceKey = `accept-test-race-${Date.now()}`;
   const { rows: raceRows } = await pool.query<{ id: string }>(
@@ -324,6 +364,9 @@ async function runProviderAcceptanceTests() {
     [raceKey, customerId]
   );
   const raceId = raceRows[0].id;
+
+  // Both providers must have approved category 'plumber' to compete in the race
+  await pool.query("UPDATE provider_profiles SET category_id = 'plumber' WHERE user_id = $1", [provider1Id]);
 
   // Two different authenticated providers concurrently claim the SAME booking
   const [raceRes1, raceRes2] = await Promise.all([
@@ -364,6 +407,9 @@ async function runProviderAcceptanceTests() {
     [raceId]
   );
   testAssert(raceLogRows.length === 1, 'Exactly one successful transition exists in DB logs after race (Requirement 30)');
+
+  // Complete raceId booking so winning provider has no lingering active booking in progress
+  await pool.query("UPDATE bookings SET status = 'BOOKING_COMPLETED' WHERE id = $1", [raceId]);
 
   console.log('\n--- 6b. IN-TRANSACTION PROVIDER ROLE & STATUS RE-VALIDATION (PHASE 2F REGRESSION) ---');
 
@@ -566,6 +612,219 @@ async function runProviderAcceptanceTests() {
   testAssert(finalDbRows[0].status === 'PROVIDER_ACCEPTED', 'Final booking status is PROVIDER_ACCEPTED');
   testAssert(finalDbRows[0].provider_id === provider2Id, 'Booking provider_id correctly assigned to Provider 2');
 
+  console.log('\n--- 6c. WORKER VERIFICATION, AVAILABILITY & SINGLE ACTIVE JOB ENFORCEMENT ---');
+
+  // Complete lockBookingId so provider2 is free
+  await pool.query("UPDATE bookings SET status = 'BOOKING_COMPLETED' WHERE id = $1", [lockBookingId]);
+
+  // Test 6c.1: Pending verification worker receives 403 FORBIDDEN
+  const bPendingKey = `accept-test-pending-${Date.now()}`;
+  const { rows: bPendingRows } = await pool.query<{ id: string }>(
+    `INSERT INTO bookings (idempotency_key, customer_id, category_id, area_locality, text_description, visiting_fee, status)
+     VALUES ($1, $2, 'plumber', 'station-colony', 'Tap leaking', 99.00, 'SERVICE_REQUESTED')
+     RETURNING id`,
+    [bPendingKey, customerId]
+  );
+  const bPendingId = bPendingRows[0].id;
+
+  await pool.query("UPDATE provider_profiles SET verification_status = 'PENDING_VERIFICATION' WHERE user_id = $1", [provider2Id]);
+  const resPendingAccept = await app.inject({
+    method: 'POST',
+    url: `/api/provider/jobs/${bPendingId}/accept`,
+    headers: { authorization: `Bearer ${provider2Token}` },
+  });
+  testAssert(resPendingAccept.statusCode === 403, 'Pending verification worker receives 403 Forbidden on accept');
+  const bodyPendingAccept = JSON.parse(resPendingAccept.payload);
+  testAssert(bodyPendingAccept.error?.code === 'FORBIDDEN', 'Pending verification error code is FORBIDDEN');
+
+  // Test 6c.2: Rejected worker receives 403 FORBIDDEN
+  await pool.query("UPDATE provider_profiles SET verification_status = 'REJECTED' WHERE user_id = $1", [provider2Id]);
+  const resRejectedAccept = await app.inject({
+    method: 'POST',
+    url: `/api/provider/jobs/${bPendingId}/accept`,
+    headers: { authorization: `Bearer ${provider2Token}` },
+  });
+  testAssert(resRejectedAccept.statusCode === 403, 'Rejected worker receives 403 Forbidden on accept');
+  const bodyRejectedAccept = JSON.parse(resRejectedAccept.payload);
+  testAssert(bodyRejectedAccept.error?.code === 'FORBIDDEN', 'Rejected worker error code is FORBIDDEN');
+
+  // Restore verification_status to VERIFIED
+  await pool.query("UPDATE provider_profiles SET verification_status = 'VERIFIED' WHERE user_id = $1", [provider2Id]);
+
+  // Test 6c.3: Unavailable worker receives 400 PROVIDER_UNAVAILABLE
+  await pool.query("UPDATE provider_profiles SET is_available = false WHERE user_id = $1", [provider2Id]);
+  const resUnavailAccept = await app.inject({
+    method: 'POST',
+    url: `/api/provider/jobs/${bPendingId}/accept`,
+    headers: { authorization: `Bearer ${provider2Token}` },
+  });
+  testAssert(resUnavailAccept.statusCode === 400, 'Unavailable worker receives 400 Bad Request on accept');
+  const bodyUnavailAccept = JSON.parse(resUnavailAccept.payload);
+  testAssert(bodyUnavailAccept.error?.code === 'PROVIDER_UNAVAILABLE', 'Unavailable worker error code is PROVIDER_UNAVAILABLE');
+
+  // Restore is_available to true
+  await pool.query("UPDATE provider_profiles SET is_available = true WHERE user_id = $1", [provider2Id]);
+
+  // Test 6c.4: Worker with active job claiming new job receives 409 ACTIVE_BOOKING_EXISTS
+  // Accept bPendingId first to establish active job
+  const resActiveInitial = await app.inject({
+    method: 'POST',
+    url: `/api/provider/jobs/${bPendingId}/accept`,
+    headers: { authorization: `Bearer ${provider2Token}` },
+  });
+  testAssert(resActiveInitial.statusCode === 200, 'Provider 2 accepts first job normally (200 OK)');
+
+  // Now create second job bSecondKey
+  const bSecondKey = `accept-test-second-${Date.now()}`;
+  const { rows: bSecondRows } = await pool.query<{ id: string }>(
+    `INSERT INTO bookings (idempotency_key, customer_id, category_id, area_locality, text_description, visiting_fee, status)
+     VALUES ($1, $2, 'plumber', 'station-colony', 'Pipe repair', 99.00, 'SERVICE_REQUESTED')
+     RETURNING id`,
+    [bSecondKey, customerId]
+  );
+  const bSecondId = bSecondRows[0].id;
+
+  const resActiveConflict = await app.inject({
+    method: 'POST',
+    url: `/api/provider/jobs/${bSecondId}/accept`,
+    headers: { authorization: `Bearer ${provider2Token}` },
+  });
+  testAssert(resActiveConflict.statusCode === 409, 'Provider with existing active job receives 409 Conflict');
+  const bodyActiveConflict = JSON.parse(resActiveConflict.payload);
+  testAssert(bodyActiveConflict.error?.code === 'ACTIVE_BOOKING_EXISTS', 'Active job conflict error code is ACTIVE_BOOKING_EXISTS');
+
+  // Complete the active jobs so provider2 is clean
+  await pool.query("UPDATE bookings SET status = 'BOOKING_COMPLETED' WHERE id IN ($1, $2)", [bPendingId, bSecondId]);
+
+  // Test 6c.4b: Worker with PROVIDER_ASSIGNED job claiming open broadcast job receives 409 ACTIVE_BOOKING_EXISTS
+  const bAsgnKey = `accept-test-asgn-${Date.now()}`;
+  const { rows: bAsgnRows } = await pool.query<{ id: string }>(
+    `INSERT INTO bookings (idempotency_key, customer_id, provider_id, category_id, area_locality, text_description, visiting_fee, status)
+     VALUES ($1, $2, $3, 'plumber', 'station-colony', 'Assigned offer', 99.00, 'PROVIDER_ASSIGNED')
+     RETURNING id`,
+    [bAsgnKey, customerId, provider2Id]
+  );
+  const bAsgnId = bAsgnRows[0].id;
+
+  const bOpenKey1 = `accept-test-open1-${Date.now()}`;
+  const { rows: bOpen1Rows } = await pool.query<{ id: string }>(
+    `INSERT INTO bookings (idempotency_key, customer_id, category_id, area_locality, text_description, visiting_fee, status)
+     VALUES ($1, $2, 'plumber', 'station-colony', 'Open Job 1', 99.00, 'SERVICE_REQUESTED')
+     RETURNING id`,
+    [bOpenKey1, customerId]
+  );
+  const bOpen1Id = bOpen1Rows[0].id;
+
+  const resAsgnConflict = await app.inject({
+    method: 'POST',
+    url: `/api/provider/jobs/${bOpen1Id}/accept`,
+    headers: { authorization: `Bearer ${provider2Token}` },
+  });
+  testAssert(resAsgnConflict.statusCode === 409, 'Provider with PROVIDER_ASSIGNED job receives 409 when claiming open job');
+  testAssert(JSON.parse(resAsgnConflict.payload).error?.code === 'ACTIVE_BOOKING_EXISTS', 'Error code is ACTIVE_BOOKING_EXISTS for PROVIDER_ASSIGNED');
+
+  await pool.query("UPDATE bookings SET status = 'BOOKING_COMPLETED' WHERE id = $1", [bAsgnId]);
+
+  // Test 6c.4c: Worker with SERVICE_COMPLETED job claiming open broadcast job receives 409 ACTIVE_BOOKING_EXISTS
+  const bSCompKey = `accept-test-scomp-${Date.now()}`;
+  const { rows: bSCompRows } = await pool.query<{ id: string }>(
+    `INSERT INTO bookings (idempotency_key, customer_id, provider_id, category_id, area_locality, text_description, visiting_fee, status)
+     VALUES ($1, $2, $3, 'plumber', 'station-colony', 'Service completed job', 99.00, 'SERVICE_COMPLETED')
+     RETURNING id`,
+    [bSCompKey, customerId, provider2Id]
+  );
+  const bSCompId = bSCompRows[0].id;
+
+  const resSCompConflict = await app.inject({
+    method: 'POST',
+    url: `/api/provider/jobs/${bOpen1Id}/accept`,
+    headers: { authorization: `Bearer ${provider2Token}` },
+  });
+  testAssert(resSCompConflict.statusCode === 409, 'Provider with SERVICE_COMPLETED job receives 409 when claiming open job');
+  testAssert(JSON.parse(resSCompConflict.payload).error?.code === 'ACTIVE_BOOKING_EXISTS', 'Error code is ACTIVE_BOOKING_EXISTS for SERVICE_COMPLETED');
+
+  await pool.query("UPDATE bookings SET status = 'BOOKING_COMPLETED' WHERE id = $1", [bSCompId]);
+
+  // Test 6c.4d: Worker with PAYMENT_COLLECTED job claiming open broadcast job receives 409 ACTIVE_BOOKING_EXISTS
+  const bPCollKey = `accept-test-pcoll-${Date.now()}`;
+  const { rows: bPCollRows } = await pool.query<{ id: string }>(
+    `INSERT INTO bookings (idempotency_key, customer_id, provider_id, category_id, area_locality, text_description, visiting_fee, status)
+     VALUES ($1, $2, $3, 'plumber', 'station-colony', 'Payment collected job', 99.00, 'PAYMENT_COLLECTED')
+     RETURNING id`,
+    [bPCollKey, customerId, provider2Id]
+  );
+  const bPCollId = bPCollRows[0].id;
+
+  const resPCollConflict = await app.inject({
+    method: 'POST',
+    url: `/api/provider/jobs/${bOpen1Id}/accept`,
+    headers: { authorization: `Bearer ${provider2Token}` },
+  });
+  testAssert(resPCollConflict.statusCode === 409, 'Provider with PAYMENT_COLLECTED job receives 409 when claiming open job');
+  testAssert(JSON.parse(resPCollConflict.payload).error?.code === 'ACTIVE_BOOKING_EXISTS', 'Error code is ACTIVE_BOOKING_EXISTS for PAYMENT_COLLECTED');
+
+  await pool.query("UPDATE bookings SET status = 'BOOKING_COMPLETED' WHERE id = $1", [bPCollId]);
+
+  // Test 6c.4e: With previous bookings BOOKING_COMPLETED, worker can claim open job -> 200 OK
+  const resOpen1Success = await app.inject({
+    method: 'POST',
+    url: `/api/provider/jobs/${bOpen1Id}/accept`,
+    headers: { authorization: `Bearer ${provider2Token}` },
+  });
+  testAssert(resOpen1Success.statusCode === 200, 'Provider with only BOOKING_COMPLETED historical jobs can claim open job (200 OK)');
+
+  // Complete bOpen1Id before next test
+  await pool.query("UPDATE bookings SET status = 'BOOKING_COMPLETED' WHERE id = $1", [bOpen1Id]);
+
+  // Test 6c.5: Two concurrent claims for two different bookings by the same provider (one 200, one 409)
+  const bConcAKey = `accept-test-conca-${Date.now()}`;
+  const bConcBKey = `accept-test-concb-${Date.now()}`;
+  const { rows: bConcARows } = await pool.query<{ id: string }>(
+    `INSERT INTO bookings (idempotency_key, customer_id, category_id, area_locality, text_description, visiting_fee, status)
+     VALUES ($1, $2, 'plumber', 'station-colony', 'Concurrent Job A', 99.00, 'SERVICE_REQUESTED')
+     RETURNING id`,
+    [bConcAKey, customerId]
+  );
+  const { rows: bConcBRows } = await pool.query<{ id: string }>(
+    `INSERT INTO bookings (idempotency_key, customer_id, category_id, area_locality, text_description, visiting_fee, status)
+     VALUES ($1, $2, 'plumber', 'station-colony', 'Concurrent Job B', 99.00, 'SERVICE_REQUESTED')
+     RETURNING id`,
+    [bConcBKey, customerId]
+  );
+  const bConcAId = bConcARows[0].id;
+  const bConcBId = bConcBRows[0].id;
+
+  const [concResA, concResB] = await Promise.all([
+    app.inject({
+      method: 'POST',
+      url: `/api/provider/jobs/${bConcAId}/accept`,
+      headers: { authorization: `Bearer ${provider2Token}` },
+    }),
+    app.inject({
+      method: 'POST',
+      url: `/api/provider/jobs/${bConcBId}/accept`,
+      headers: { authorization: `Bearer ${provider2Token}` },
+    }),
+  ]);
+
+  const concCodes = [concResA.statusCode, concResB.statusCode].sort();
+  testAssert(concCodes[0] === 200 && concCodes[1] === 409, 'Same provider claiming two different jobs concurrently: exactly one 200, exactly one 409');
+
+  const concConflictBody = concResA.statusCode === 409 ? JSON.parse(concResA.payload) : JSON.parse(concResB.payload);
+  testAssert(concConflictBody.error?.code === 'ACTIVE_BOOKING_EXISTS', 'Failing concurrent claim error code is ACTIVE_BOOKING_EXISTS');
+
+  const { rows: concDbRows } = await pool.query<{ id: string; status: string; provider_id: string | null }>(
+    'SELECT id, status, provider_id FROM bookings WHERE id IN ($1, $2)',
+    [bConcAId, bConcBId]
+  );
+  const acceptedJobs = concDbRows.filter((r) => r.status === 'PROVIDER_ACCEPTED' && r.provider_id === provider2Id);
+  const requestedJobs = concDbRows.filter((r) => r.status === 'SERVICE_REQUESTED' && r.provider_id === null);
+  testAssert(acceptedJobs.length === 1, 'Exactly one booking transitioned to PROVIDER_ACCEPTED for the provider');
+  testAssert(requestedJobs.length === 1, 'The other booking remains SERVICE_REQUESTED and unclaimed');
+
+  // Complete concurrent jobs
+  await pool.query("UPDATE bookings SET status = 'BOOKING_COMPLETED' WHERE id IN ($1, $2)", [bConcAId, bConcBId]);
+
   console.log('\n--- 7. Bilingual i18n Key Symmetry Audit for Module 8 ---');
 
   const enKeys = Object.keys(en);
@@ -606,6 +865,12 @@ async function runProviderAcceptanceTests() {
     adminPhone,
   ]);
   await pool.query('DELETE FROM bookings WHERE customer_id IN (SELECT id FROM users WHERE phone IN ($1, $2, $3, $4))', [
+    customerPhone,
+    provider1Phone,
+    provider2Phone,
+    adminPhone,
+  ]);
+  await pool.query('DELETE FROM provider_profiles WHERE user_id IN (SELECT id FROM users WHERE phone IN ($1, $2, $3, $4))', [
     customerPhone,
     provider1Phone,
     provider2Phone,

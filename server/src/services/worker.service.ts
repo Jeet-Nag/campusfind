@@ -192,17 +192,24 @@ export class WorkerService {
       );
     }
 
-    // 4. Validate Images (Aadhaar Front, Aadhaar Back, Worker Photo)
-    const frontImg = this.validateImage(input.aadhaarFrontBase64, input.aadhaarFrontMime, 'Aadhaar Front');
-    const backImg = this.validateImage(input.aadhaarBackBase64, input.aadhaarBackMime, 'Aadhaar Back');
-    const photoImg = this.validateImage(input.photoBase64, input.photoMime, 'Worker Photo');
-
-    // 5. Check if already verified
-    const { rows: existingProfile } = await pool.query<{ verification_status: string }>(
-      'SELECT verification_status FROM provider_profiles WHERE user_id = $1',
+    // 4. Validate or preserve Images (Aadhaar Front, Aadhaar Back, Worker Photo)
+    const { rows: existingProfiles } = await pool.query<{
+      verification_status: string;
+      has_front: boolean;
+      has_back: boolean;
+      has_photo: boolean;
+    }>(
+      `SELECT
+         verification_status,
+         (aadhaar_front_data IS NOT NULL) as has_front,
+         (aadhaar_back_data IS NOT NULL) as has_back,
+         (photo_data IS NOT NULL) as has_photo
+       FROM provider_profiles WHERE user_id = $1`,
       [userId]
     );
-    if (existingProfile.length > 0 && existingProfile[0].verification_status === 'VERIFIED') {
+
+    const existing = existingProfiles[0];
+    if (existing && existing.verification_status === 'VERIFIED') {
       throw new WorkerError(
         'ALREADY_VERIFIED',
         'Worker profile is already verified by admin.',
@@ -211,7 +218,43 @@ export class WorkerService {
       );
     }
 
-    // 6. Save in Transaction
+    let frontImg: ValidatedImage | null = null;
+    if (input.aadhaarFrontBase64 && input.aadhaarFrontBase64.trim().length > 0) {
+      frontImg = this.validateImage(input.aadhaarFrontBase64, input.aadhaarFrontMime || '', 'Aadhaar Front');
+    } else if (!existing?.has_front) {
+      throw new WorkerError(
+        'INVALID_IMAGE_PAYLOAD',
+        'Aadhaar Front image data is required.',
+        'Aadhaar Front फोटो आवश्यक है।',
+        400
+      );
+    }
+
+    let backImg: ValidatedImage | null = null;
+    if (input.aadhaarBackBase64 && input.aadhaarBackBase64.trim().length > 0) {
+      backImg = this.validateImage(input.aadhaarBackBase64, input.aadhaarBackMime || '', 'Aadhaar Back');
+    } else if (!existing?.has_back) {
+      throw new WorkerError(
+        'INVALID_IMAGE_PAYLOAD',
+        'Aadhaar Back image data is required.',
+        'Aadhaar Back फोटो आवश्यक है।',
+        400
+      );
+    }
+
+    let photoImg: ValidatedImage | null = null;
+    if (input.photoBase64 && input.photoBase64.trim().length > 0) {
+      photoImg = this.validateImage(input.photoBase64, input.photoMime || '', 'Worker Photo');
+    } else if (!existing?.has_photo) {
+      throw new WorkerError(
+        'INVALID_IMAGE_PAYLOAD',
+        'Worker Photo image data is required.',
+        'Worker Photo फोटो आवश्यक है।',
+        400
+      );
+    }
+
+    // 5. Save in Transaction
     const client = await pool.connect();
     try {
       await client.query('BEGIN');
@@ -229,28 +272,32 @@ export class WorkerService {
            aadhaar_front_data, aadhaar_front_mime,
            aadhaar_back_data, aadhaar_back_mime,
            photo_data, photo_mime,
-           submitted_at
-         ) VALUES ($1, $2, 'Chandil', 'PENDING_VERIFICATION', $3, $4, $5, $6, $7, $8, NOW())
+           submitted_at,
+           rejection_reason, rejected_at, rejected_by
+         ) VALUES ($1, $2, 'Chandil', 'PENDING_VERIFICATION', $3, $4, $5, $6, $7, $8, NOW(), NULL, NULL, NULL)
          ON CONFLICT (user_id) DO UPDATE SET
            category_id = EXCLUDED.category_id,
            verification_status = 'PENDING_VERIFICATION',
-           aadhaar_front_data = EXCLUDED.aadhaar_front_data,
-           aadhaar_front_mime = EXCLUDED.aadhaar_front_mime,
-           aadhaar_back_data = EXCLUDED.aadhaar_back_data,
-           aadhaar_back_mime = EXCLUDED.aadhaar_back_mime,
-           photo_data = EXCLUDED.photo_data,
-           photo_mime = EXCLUDED.photo_mime,
-           submitted_at = NOW()
+           aadhaar_front_data = COALESCE(EXCLUDED.aadhaar_front_data, provider_profiles.aadhaar_front_data),
+           aadhaar_front_mime = COALESCE(EXCLUDED.aadhaar_front_mime, provider_profiles.aadhaar_front_mime),
+           aadhaar_back_data = COALESCE(EXCLUDED.aadhaar_back_data, provider_profiles.aadhaar_back_data),
+           aadhaar_back_mime = COALESCE(EXCLUDED.aadhaar_back_mime, provider_profiles.aadhaar_back_mime),
+           photo_data = COALESCE(EXCLUDED.photo_data, provider_profiles.photo_data),
+           photo_mime = COALESCE(EXCLUDED.photo_mime, provider_profiles.photo_mime),
+           submitted_at = NOW(),
+           rejection_reason = NULL,
+           rejected_at = NULL,
+           rejected_by = NULL
          RETURNING submitted_at`,
         [
           userId,
           input.categoryId,
-          frontImg.buffer,
-          frontImg.mimeType,
-          backImg.buffer,
-          backImg.mimeType,
-          photoImg.buffer,
-          photoImg.mimeType,
+          frontImg ? frontImg.buffer : null,
+          frontImg ? frontImg.mimeType : null,
+          backImg ? backImg.buffer : null,
+          backImg ? backImg.mimeType : null,
+          photoImg ? photoImg.buffer : null,
+          photoImg ? photoImg.mimeType : null,
         ]
       );
 
@@ -276,13 +323,16 @@ export class WorkerService {
    * Omits raw Aadhaar bytes.
    */
   public async getWorkerStatus(userId: string): Promise<{
-    status: 'NOT_STARTED' | 'PENDING_VERIFICATION' | 'VERIFIED';
+    status: 'NOT_STARTED' | 'PENDING_VERIFICATION' | 'VERIFIED' | 'REJECTED';
     hasSubmitted: boolean;
+    fullName?: string | null;
     categoryId?: string | null;
     categoryTitleEn?: string | null;
     categoryTitleHi?: string | null;
     submittedAt?: string | null;
     verifiedAt?: string | null;
+    rejectionReason?: string | null;
+    rejectedAt?: string | null;
     hasAadhaarFront: boolean;
     hasAadhaarBack: boolean;
     hasPhoto: boolean;
@@ -305,21 +355,28 @@ export class WorkerService {
         sc.title_hi as category_title_hi,
         pp.submitted_at,
         pp.verified_at,
+        pp.rejection_reason,
+        pp.rejected_at,
+        u.full_name,
         (pp.aadhaar_front_data IS NOT NULL) as has_aadhaar_front,
         (pp.aadhaar_back_data IS NOT NULL) as has_aadhaar_back,
         (pp.photo_data IS NOT NULL) as has_photo
       FROM provider_profiles pp
+      JOIN users u ON pp.user_id = u.id
       LEFT JOIN service_categories sc ON pp.category_id = sc.id
       WHERE pp.user_id = $1
     `;
 
     const { rows } = await pool.query<{
-      verification_status: 'PENDING_VERIFICATION' | 'VERIFIED';
+      verification_status: 'PENDING_VERIFICATION' | 'VERIFIED' | 'REJECTED';
       category_id: string | null;
       category_title_en: string | null;
       category_title_hi: string | null;
       submitted_at: Date | null;
       verified_at: Date | null;
+      rejection_reason: string | null;
+      rejected_at: Date | null;
+      full_name: string | null;
       has_aadhaar_front: boolean;
       has_aadhaar_back: boolean;
       has_photo: boolean;
@@ -329,6 +386,9 @@ export class WorkerService {
       return {
         status: 'NOT_STARTED',
         hasSubmitted: false,
+        rejectionReason: null,
+        rejectedAt: null,
+        fullName: null,
         hasAadhaarFront: false,
         hasAadhaarBack: false,
         hasPhoto: false,
@@ -339,11 +399,14 @@ export class WorkerService {
     return {
       status: row.verification_status,
       hasSubmitted: true,
+      fullName: row.full_name,
       categoryId: row.category_id,
       categoryTitleEn: row.category_title_en,
       categoryTitleHi: row.category_title_hi,
       submittedAt: row.submitted_at ? row.submitted_at.toISOString() : null,
       verifiedAt: row.verified_at ? row.verified_at.toISOString() : null,
+      rejectionReason: row.rejection_reason || null,
+      rejectedAt: row.rejected_at ? row.rejected_at.toISOString() : null,
       hasAadhaarFront: !!row.has_aadhaar_front,
       hasAadhaarBack: !!row.has_aadhaar_back,
       hasPhoto: !!row.has_photo,
@@ -528,7 +591,10 @@ export class WorkerService {
          SET verification_status = 'VERIFIED',
              verified_at = NOW(),
              verified_by = $1,
-             is_available = true
+             is_available = true,
+             rejection_reason = NULL,
+             rejected_at = NULL,
+             rejected_by = NULL
          WHERE user_id = $2`,
         [adminId, workerId]
       );
@@ -561,6 +627,8 @@ export class WorkerService {
            p.verification_status as "verificationStatus",
            p.submitted_at as "submittedAt",
            p.verified_at as "verifiedAt",
+           p.rejection_reason as "rejectionReason",
+           p.rejected_at as "rejectedAt",
            u.created_at as "createdAt",
            (p.aadhaar_front_data IS NOT NULL) as "hasAadhaarFront",
            (p.aadhaar_back_data IS NOT NULL) as "hasAadhaarBack",
@@ -589,6 +657,141 @@ export class WorkerService {
         verificationStatus: r.verificationStatus,
         submittedAt: r.submittedAt ? new Date(r.submittedAt).toISOString() : null,
         verifiedAt: r.verifiedAt ? new Date(r.verifiedAt).toISOString() : null,
+        rejectionReason: r.rejectionReason || null,
+        rejectedAt: r.rejectedAt ? new Date(r.rejectedAt).toISOString() : null,
+        createdAt: new Date(r.createdAt).toISOString(),
+        hasAadhaarFront: !!r.hasAadhaarFront,
+        hasAadhaarBack: !!r.hasAadhaarBack,
+        hasPhoto: !!r.hasPhoto,
+      };
+    } catch (err) {
+      await client.query('ROLLBACK');
+      throw err;
+    } finally {
+      client.release();
+    }
+  }
+
+  /**
+   * Admin-only rejection of a worker application with mandatory reason (1-500 chars).
+   * Sets verification_status = 'REJECTED', records rejected_at, rejected_by, and rejection_reason.
+   * If user was 'provider', demotes to 'customer' and increments token_version to immediately invalidate provider sessions.
+   */
+  public async rejectWorker(workerId: string, adminId: string, reason: string): Promise<AdminProviderView> {
+    if (!workerId || !UUID_REGEX.test(workerId)) {
+      throw new WorkerError('INVALID_ID', 'Invalid worker ID.', 'अमान्य कार्यकर्ता आईडी।', 400);
+    }
+    if (!adminId || !UUID_REGEX.test(adminId)) {
+      throw new WorkerError('INVALID_ADMIN_ID', 'Invalid admin ID.', 'अमान्य एडमिन आईडी।', 400);
+    }
+
+    const trimmedReason = (reason || '').trim();
+    if (trimmedReason.length < 1 || trimmedReason.length > 500) {
+      throw new WorkerError(
+        'INVALID_REJECTION_REASON',
+        'Rejection reason is required and must not exceed 500 characters.',
+        'अस्वीकृति का कारण आवश्यक है और 500 अक्षरों से अधिक नहीं हो सकता।',
+        400
+      );
+    }
+
+    const pool = db.getPool();
+    if (!pool) {
+      throw new WorkerError('DATABASE_UNAVAILABLE', 'Database is not available.', 'डेटाबेस अनुपलब्ध है।', 500);
+    }
+
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+
+      const { rows } = await client.query<{
+        user_id: string;
+        role: string;
+        verification_status: string;
+      }>(
+        `SELECT pp.user_id, u.role, pp.verification_status
+         FROM provider_profiles pp
+         JOIN users u ON pp.user_id = u.id
+         WHERE pp.user_id = $1
+         FOR UPDATE`,
+        [workerId]
+      );
+
+      if (rows.length === 0) {
+        throw new WorkerError('WORKER_NOT_FOUND', 'Worker profile not found.', 'कार्यकर्ता प्रोफ़ाइल नहीं मिली।', 404);
+      }
+
+      await client.query(
+        `UPDATE provider_profiles
+         SET verification_status = 'REJECTED',
+             rejection_reason = $1,
+             rejected_at = NOW(),
+             rejected_by = $2,
+             is_available = false
+         WHERE user_id = $3`,
+        [trimmedReason, adminId, workerId]
+      );
+
+      await client.query(
+        `UPDATE users
+         SET role = 'customer',
+             token_version = token_version + 1,
+             updated_at = NOW()
+         WHERE id = $1`,
+        [workerId]
+      );
+
+      await client.query('COMMIT');
+
+      const { rows: updatedRows } = await pool.query<any>(
+        `SELECT
+           u.id,
+           u.phone,
+           u.full_name as "fullName",
+           u.role,
+           u.preferred_language as "preferredLanguage",
+           u.is_active as "isActive",
+           p.category_id as "categoryId",
+           sc.title_en as "categoryTitleEn",
+           sc.title_hi as "categoryTitleHi",
+           p.service_area as "serviceArea",
+           p.is_available as "isAvailable",
+           p.rating,
+           p.verification_status as "verificationStatus",
+           p.submitted_at as "submittedAt",
+           p.verified_at as "verifiedAt",
+           p.rejection_reason as "rejectionReason",
+           p.rejected_at as "rejectedAt",
+           u.created_at as "createdAt",
+           (p.aadhaar_front_data IS NOT NULL) as "hasAadhaarFront",
+           (p.aadhaar_back_data IS NOT NULL) as "hasAadhaarBack",
+           (p.photo_data IS NOT NULL) as "hasPhoto"
+         FROM users u
+         JOIN provider_profiles p ON u.id = p.user_id
+         JOIN service_categories sc ON p.category_id = sc.id
+         WHERE u.id = $1`,
+        [workerId]
+      );
+
+      const r = updatedRows[0];
+      return {
+        id: r.id,
+        phone: r.phone,
+        fullName: r.fullName,
+        role: r.role,
+        preferredLanguage: r.preferredLanguage,
+        isActive: r.isActive,
+        categoryId: r.categoryId,
+        categoryTitleEn: r.categoryTitleEn,
+        categoryTitleHi: r.categoryTitleHi,
+        serviceArea: r.serviceArea,
+        isAvailable: r.isAvailable,
+        rating: parseFloat(String(r.rating)),
+        verificationStatus: r.verificationStatus,
+        submittedAt: r.submittedAt ? new Date(r.submittedAt).toISOString() : null,
+        verifiedAt: r.verifiedAt ? new Date(r.verifiedAt).toISOString() : null,
+        rejectionReason: r.rejectionReason || null,
+        rejectedAt: r.rejectedAt ? new Date(r.rejectedAt).toISOString() : null,
         createdAt: new Date(r.createdAt).toISOString(),
         hasAadhaarFront: !!r.hasAadhaarFront,
         hasAadhaarBack: !!r.hasAadhaarBack,

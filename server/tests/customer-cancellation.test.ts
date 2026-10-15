@@ -76,8 +76,8 @@ async function runCustomerCancellationTests() {
 
     // Seed provider profile for electrician
     await pool.query(
-      `INSERT INTO provider_profiles (user_id, category_id, service_area, is_available)
-       VALUES ($1, 'electrician', 'Chandil Bazar', true)`,
+      `INSERT INTO provider_profiles (user_id, category_id, service_area, is_available, verification_status)
+       VALUES ($1, 'electrician', 'Chandil Bazar', true, 'VERIFIED')`,
       [pId]
     );
 
@@ -498,6 +498,12 @@ async function runCustomerCancellationTests() {
     assert(concLogRows.length === 1, '24b. Exactly one cancellation log inserted under concurrency');
 
     // 25. Customer cancellation vs Provider Acceptance
+    // Complete any prior active bookings for provider P so provider is eligible to accept
+    await pool.query(
+      `UPDATE bookings SET status = 'BOOKING_COMPLETED' WHERE provider_id = $1 AND status IN ('PROVIDER_ASSIGNED', 'PROVIDER_ACCEPTED', 'PROVIDER_ON_THE_WAY', 'SERVICE_STARTED', 'SERVICE_COMPLETED', 'PAYMENT_PENDING', 'PAYMENT_COLLECTED')`,
+      [pId]
+    );
+
     // 25a. If customer cancels, provider cannot accept (receives 409 Conflict)
     const bCancelBeforeAcceptId = await seedBooking({
       customerId: c1Id,

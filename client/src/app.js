@@ -16,6 +16,7 @@ import { ProviderHome } from './components/ProviderHome';
 import { ProviderJobDetailScreen } from './components/ProviderJobDetailScreen';
 import { WorkerSetupScreen } from './components/WorkerSetupScreen';
 import { WorkerPendingScreen } from './components/WorkerPendingScreen';
+import { WorkerRejectedScreen } from './components/WorkerRejectedScreen';
 import { logout } from './state/auth';
 import { t } from './state/language';
 export function App() {
@@ -48,6 +49,9 @@ export function App() {
     // 5. Worker Onboarding State Handling
     if (workerStatus.value === 'PENDING_VERIFICATION') {
         return _jsx(WorkerPendingScreen, {});
+    }
+    if (workerStatus.value === 'REJECTED') {
+        return _jsx(WorkerRejectedScreen, {});
     }
     if (selectedOnboardingRole.value === 'worker' && workerStatus.value !== 'VERIFIED') {
         return _jsx(WorkerSetupScreen, {});

@@ -1,23 +1,60 @@
 import { Capacitor } from '@capacitor/core';
 
 /**
+ * Resolves the native API base URL based on build-time environment flags.
+ * - Staging: Explicitly configured via VITE_API_BASE_URL (e.g. https://chandil-home-services-staging.onrender.com)
+ * - Production: Explicitly configured via VITE_API_BASE_URL (e.g. https://chandilhomeservices.devs.surf)
+ * - Local Development: Falls back to http://127.0.0.1:3000 for ADB reverse proxying.
+ *
+ * SAFETY INVARIANT: A release build of native Android must NEVER silently fall back
+ * to production or localhost if unconfigured. If VITE_API_BASE_URL is missing in a release
+ * build, it returns an unconfigured diagnostic sentinel to prevent accidental requests.
+ */
+export function resolveNativeApiBaseUrl(customEnv?: Record<string, any>): string {
+  const env = customEnv || (import.meta as any).env || {};
+  const explicitUrl = env.VITE_API_BASE_URL ? String(env.VITE_API_BASE_URL).trim() : '';
+
+  if (explicitUrl.length > 0) {
+    return explicitUrl.replace(/\/+$/, '');
+  }
+
+  // Local development fallback (only when NOT in production build mode)
+  if (!env.PROD || env.DEV) {
+    return 'http://127.0.0.1:3000';
+  }
+
+  // Release/production build with missing API URL must fail safely
+  const warning = '[API Config Error] VITE_API_BASE_URL is not set for native release build. Build must explicitly specify target endpoint.';
+  if (typeof console !== 'undefined' && console.error) {
+    console.error(warning);
+  }
+  return 'UNCONFIGURED_NATIVE_API_BASE_URL';
+}
+
+/**
  * Centralized API base URL configuration.
  * - In Web Browser / Production: empty string (requests use standard relative /api/... paths)
- * - In Capacitor Native Android (Development): http://127.0.0.1:3000 (accessible via ADB reverse tcp:3000 tcp:3000)
+ * - In Capacitor Native Android: dynamically resolved via resolveNativeApiBaseUrl()
  */
 export const API_BASE_URL: string = Capacitor.isNativePlatform()
-  ? ((import.meta as any).env?.VITE_API_BASE_URL || 'http://127.0.0.1:3000')
+  ? resolveNativeApiBaseUrl()
   : '';
 
 /**
  * Resolves an API path using the centralized API_BASE_URL.
  */
-export function getApiUrl(path: string): string {
+export function getApiUrl(path: string, customBaseUrl?: string): string {
+  const baseUrl = customBaseUrl !== undefined ? customBaseUrl : API_BASE_URL;
+
+  if (baseUrl === 'UNCONFIGURED_NATIVE_API_BASE_URL') {
+    throw new Error('API Base URL is unconfigured for native build. Build must specify an explicit VITE_API_BASE_URL.');
+  }
+
   if (path.startsWith('http://') || path.startsWith('https://')) {
     return path;
   }
   const cleanPath = path.startsWith('/') ? path : `/${path}`;
-  return `${API_BASE_URL}${cleanPath}`;
+  return `${baseUrl}${cleanPath}`;
 }
 
 /**

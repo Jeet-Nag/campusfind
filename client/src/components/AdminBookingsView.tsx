@@ -1397,7 +1397,10 @@ export function AdminBookingsView() {
                   const isSelected = assignSelectedProviderId.value === provider.id;
                   const isMatchingCategory =
                     provider.categoryId === selectedBookingDetail.value?.category.id;
-                  const isSelectable = provider.isActive && provider.isAvailable;
+                  const isVerified = provider.verificationStatus === 'VERIFIED';
+                  const isBusy = (provider.activeBookingsCount ?? 0) > 0;
+                  const isSelectable =
+                    provider.isActive && provider.isAvailable && isMatchingCategory && isVerified && !isBusy;
 
                   return (
                     <label
@@ -1459,17 +1462,29 @@ export function AdminBookingsView() {
 
                       {/* Status Badges */}
                       <div class="flex flex-col items-end gap-1 shrink-0">
-                        <span
-                          class={`inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-semibold border ${
-                            provider.isAvailable
-                              ? 'bg-emerald-50 text-emerald-700 border-emerald-200'
-                              : 'bg-amber-50 text-amber-700 border-amber-200'
-                          }`}
-                        >
-                          {provider.isAvailable
-                            ? t('admin.assign_available')
-                            : t('admin.assign_busy')}
-                        </span>
+                        {!isVerified ? (
+                          <span class="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-semibold bg-amber-100 text-amber-800 border border-amber-300">
+                            {provider.verificationStatus === 'REJECTED'
+                              ? t('admin.filter_rejected')
+                              : t('admin.status_pending_verification')}
+                          </span>
+                        ) : isBusy ? (
+                          <span class="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-semibold bg-amber-50 text-amber-700 border border-amber-200">
+                            {t('admin.assign_busy')}
+                          </span>
+                        ) : (
+                          <span
+                            class={`inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-semibold border ${
+                              provider.isAvailable
+                                ? 'bg-emerald-50 text-emerald-700 border-emerald-200'
+                                : 'bg-amber-50 text-amber-700 border-amber-200'
+                            }`}
+                          >
+                            {provider.isAvailable
+                              ? t('admin.assign_available')
+                              : t('admin.assign_busy')}
+                          </span>
+                        )}
                         {!provider.isActive && (
                           <span class="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-semibold bg-red-50 text-red-700 border border-red-200">
                             {t('admin.assign_inactive')}

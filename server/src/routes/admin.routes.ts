@@ -1,9 +1,38 @@
 import { FastifyInstance, FastifyPluginAsync } from 'fastify';
 import { z } from 'zod';
 import { authenticate, requireRole } from '../middleware/auth';
-import { ApiResponse, User, AdminProviderView, AdminBookingListItem, AdminBookingDetail } from '@shared';
+import {
+  ApiResponse,
+  User,
+  AdminProviderView,
+  AdminBookingListItem,
+  AdminBookingDetail,
+  AdminUserView,
+  TestCleanupPreview,
+  TestCleanupResult,
+} from '@shared';
 import { AdminProviderService, AdminProviderError } from '../services/admin-provider.service';
 import { AdminBookingService, AdminBookingError } from '../services/admin-booking.service';
+import { adminUserService, AdminUserError } from '../services/admin-user.service';
+
+const markTestUserSchema = z
+  .object({
+    isTest: z.boolean({ required_error: 'isTest boolean is required' }),
+    cascadeBookings: z.boolean().optional(),
+  })
+  .strict();
+
+const deleteUserSchema = z
+  .object({
+    confirmPhone: z.string({ required_error: 'confirmPhone is required' }).trim(),
+  })
+  .strict();
+
+const cleanupExecuteSchema = z
+  .object({
+    confirm: z.string({ required_error: 'confirm string is required' }),
+  })
+  .strict();
 
 const createProviderSchema = z
   .object({
@@ -45,6 +74,16 @@ const assignProviderSchema = z
     providerId: z
       .string({ required_error: 'providerId is required' })
       .regex(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i, 'providerId must be a valid UUID'),
+  })
+  .strict();
+
+const rejectWorkerSchema = z
+  .object({
+    reason: z
+      .string({ required_error: 'Rejection reason is required' })
+      .trim()
+      .min(1, 'Rejection reason is required')
+      .max(500, 'Rejection reason must not exceed 500 characters'),
   })
   .strict();
 
@@ -134,6 +173,56 @@ export const adminRoutes: FastifyPluginAsync = async (app: FastifyInstance) => {
       try {
         const { id } = request.params as { id: string };
         const provider = await adminProviderService.verifyWorker(id, request.user.id);
+        const response: ApiResponse<{ provider: AdminProviderView }> = {
+          success: true,
+          data: { provider },
+        };
+        return reply.status(200).send(response);
+      } catch (err: any) {
+        if (err instanceof AdminProviderError || err.name === 'WorkerError') {
+          const response: ApiResponse = {
+            success: false,
+            error: {
+              code: err.code,
+              messageEn: err.messageEn,
+              messageHi: err.messageHi,
+            },
+          };
+          return reply.status(err.statusCode || 400).send(response);
+        }
+        throw err;
+      }
+    }
+  );
+
+  /**
+   * POST /api/admin/providers/:id/reject
+   * Rejects a worker application with a mandatory rejection reason (1-500 chars).
+   * Sets verification status to 'REJECTED', records reason, and revokes provider session if active.
+   * RBAC: Strictly restricted to 'admin' role.
+   */
+  app.post(
+    '/providers/:id/reject',
+    {
+      preHandler: [authenticate, requireRole(['admin'])],
+    },
+    async (request, reply) => {
+      try {
+        const { id } = request.params as { id: string };
+        const parsed = rejectWorkerSchema.safeParse(request.body);
+        if (!parsed.success) {
+          const response: ApiResponse = {
+            success: false,
+            error: {
+              code: 'VALIDATION_ERROR',
+              messageEn: parsed.error.errors[0]?.message || 'Invalid rejection reason',
+              messageHi: 'अमान्य अस्वीकृति कारण।',
+            },
+          };
+          return reply.status(400).send(response);
+        }
+
+        const provider = await adminProviderService.rejectWorker(id, request.user.id, parsed.data.reason);
         const response: ApiResponse<{ provider: AdminProviderView }> = {
           success: true,
           data: { provider },
@@ -574,4 +663,296 @@ export const adminRoutes: FastifyPluginAsync = async (app: FastifyInstance) => {
       }
     }
   );
+
+  /**
+   * GET /api/admin/users
+   * Lists all users with roles, active statuses, test flags, and booking counts.
+   * Filterable by search, role, isActive, isTest.
+   * RBAC: Strictly restricted to 'admin'.
+   */
+  app.get(
+    '/users',
+    {
+      preHandler: [authenticate, requireRole(['admin'])],
+    },
+    async (request, reply) => {
+      try {
+        const query = request.query as {
+          search?: string;
+          role?: string;
+          isActive?: string;
+          isTest?: string;
+        };
+
+        const filter: any = {};
+        if (query.search) filter.search = query.search;
+        if (query.role && ['customer', 'provider', 'admin'].includes(query.role)) {
+          filter.role = query.role;
+        }
+        if (query.isActive !== undefined) {
+          filter.isActive = query.isActive === 'true';
+        }
+        if (query.isTest !== undefined) {
+          filter.isTest = query.isTest === 'true';
+        }
+
+        const users = await adminUserService.listUsers(filter);
+        const response: ApiResponse<{ users: AdminUserView[] }> = {
+          success: true,
+          data: { users },
+        };
+        return reply.status(200).send(response);
+      } catch (err: any) {
+        if (err instanceof AdminUserError) {
+          const response: ApiResponse = {
+            success: false,
+            error: {
+              code: err.code,
+              messageEn: err.messageEn,
+              messageHi: err.messageHi,
+            },
+          };
+          return reply.status(err.statusCode).send(response);
+        }
+        throw err;
+      }
+    }
+  );
+
+  /**
+   * PATCH /api/admin/users/:id/status
+   * Activates or deactivates a user account.
+   * Revokes all active sessions on deactivation. Prevents self-deactivation.
+   * RBAC: Strictly restricted to 'admin'.
+   */
+  app.patch(
+    '/users/:id/status',
+    {
+      preHandler: [authenticate, requireRole(['admin'])],
+    },
+    async (request, reply) => {
+      try {
+        const { id } = request.params as { id: string };
+        const parsed = statusSchema.safeParse(request.body);
+        if (!parsed.success) {
+          const response: ApiResponse = {
+            success: false,
+            error: {
+              code: 'VALIDATION_ERROR',
+              messageEn: parsed.error.errors[0]?.message || 'Invalid status body',
+              messageHi: 'अमान्य स्थिति विवरण।',
+            },
+          };
+          return reply.status(400).send(response);
+        }
+
+        const updated = await adminUserService.updateUserStatus(id, parsed.data.isActive, request.user.id);
+        const response: ApiResponse<{ user: AdminUserView }> = {
+          success: true,
+          data: { user: updated },
+        };
+        return reply.status(200).send(response);
+      } catch (err: any) {
+        if (err instanceof AdminUserError) {
+          const response: ApiResponse = {
+            success: false,
+            error: {
+              code: err.code,
+              messageEn: err.messageEn,
+              messageHi: err.messageHi,
+            },
+          };
+          return reply.status(err.statusCode).send(response);
+        }
+        throw err;
+      }
+    }
+  );
+
+  /**
+   * POST /api/admin/users/:id/mark-test
+   * Sets or unsets the is_test flag on a user and cascades to their bookings.
+   * RBAC: Strictly restricted to 'admin'.
+   */
+  app.post(
+    '/users/:id/mark-test',
+    {
+      preHandler: [authenticate, requireRole(['admin'])],
+    },
+    async (request, reply) => {
+      try {
+        const { id } = request.params as { id: string };
+        const parsed = markTestUserSchema.safeParse(request.body);
+        if (!parsed.success) {
+          const response: ApiResponse = {
+            success: false,
+            error: {
+              code: 'VALIDATION_ERROR',
+              messageEn: parsed.error.errors[0]?.message || 'Invalid request body',
+              messageHi: 'अमान्य अनुरोध विवरण।',
+            },
+          };
+          return reply.status(400).send(response);
+        }
+
+        const updated = await adminUserService.markTestUser(
+          id,
+          parsed.data.isTest,
+          parsed.data.cascadeBookings ?? true
+        );
+        const response: ApiResponse<{ user: AdminUserView }> = {
+          success: true,
+          data: { user: updated },
+        };
+        return reply.status(200).send(response);
+      } catch (err: any) {
+        if (err instanceof AdminUserError) {
+          const response: ApiResponse = {
+            success: false,
+            error: {
+              code: err.code,
+              messageEn: err.messageEn,
+              messageHi: err.messageHi,
+            },
+          };
+          return reply.status(err.statusCode).send(response);
+        }
+        throw err;
+      }
+    }
+  );
+
+  /**
+   * DELETE /api/admin/users/:id
+   * Permanently deletes a user. Requires explicit phone confirmation.
+   * Blocks if active bookings exist. Cascades test data or anonymizes real historical bookings.
+   * RBAC: Strictly restricted to 'admin'.
+   */
+  app.delete(
+    '/users/:id',
+    {
+      preHandler: [authenticate, requireRole(['admin'])],
+    },
+    async (request, reply) => {
+      try {
+        const { id } = request.params as { id: string };
+        const parsed = deleteUserSchema.safeParse(request.body);
+        if (!parsed.success) {
+          const response: ApiResponse = {
+            success: false,
+            error: {
+              code: 'VALIDATION_ERROR',
+              messageEn: parsed.error.errors[0]?.message || 'Confirmation phone number is required',
+              messageHi: 'पुष्टि के लिए फ़ोन नंबर अनिवार्य है।',
+            },
+          };
+          return reply.status(400).send(response);
+        }
+
+        const result = await adminUserService.deleteUser(id, parsed.data.confirmPhone, request.user.id);
+        const response: ApiResponse<{ deleted: boolean; anonymized: boolean }> = {
+          success: true,
+          data: { deleted: true, anonymized: result.anonymized },
+        };
+        return reply.status(200).send(response);
+      } catch (err: any) {
+        if (err instanceof AdminUserError) {
+          const response: ApiResponse = {
+            success: false,
+            error: {
+              code: err.code,
+              messageEn: err.messageEn,
+              messageHi: err.messageHi,
+            },
+          };
+          return reply.status(err.statusCode).send(response);
+        }
+        throw err;
+      }
+    }
+  );
+
+  /**
+   * GET /api/admin/test-cleanup/preview
+   * Previews counts of test users, test bookings, and test logs.
+   * RBAC: Strictly restricted to 'admin'.
+   */
+  app.get(
+    '/test-cleanup/preview',
+    {
+      preHandler: [authenticate, requireRole(['admin'])],
+    },
+    async (_request, reply) => {
+      try {
+        const preview = await adminUserService.previewTestDataCleanup();
+        const response: ApiResponse<TestCleanupPreview> = {
+          success: true,
+          data: preview,
+        };
+        return reply.status(200).send(response);
+      } catch (err: any) {
+        if (err instanceof AdminUserError) {
+          const response: ApiResponse = {
+            success: false,
+            error: {
+              code: err.code,
+              messageEn: err.messageEn,
+              messageHi: err.messageHi,
+            },
+          };
+          return reply.status(err.statusCode).send(response);
+        }
+        throw err;
+      }
+    }
+  );
+
+  /**
+   * POST /api/admin/test-cleanup/execute
+   * Transactionally purges strictly test data (is_test = true).
+   * RBAC: Strictly restricted to 'admin'.
+   */
+  app.post(
+    '/test-cleanup/execute',
+    {
+      preHandler: [authenticate, requireRole(['admin'])],
+    },
+    async (request, reply) => {
+      try {
+        const parsed = cleanupExecuteSchema.safeParse(request.body);
+        if (!parsed.success) {
+          const response: ApiResponse = {
+            success: false,
+            error: {
+              code: 'VALIDATION_ERROR',
+              messageEn: parsed.error.errors[0]?.message || 'Confirmation code is required',
+              messageHi: 'पुष्टि कोड अनिवार्य है।',
+            },
+          };
+          return reply.status(400).send(response);
+        }
+
+        const result = await adminUserService.cleanupTestData(parsed.data.confirm);
+        const response: ApiResponse<TestCleanupResult> = {
+          success: true,
+          data: result,
+        };
+        return reply.status(200).send(response);
+      } catch (err: any) {
+        if (err instanceof AdminUserError) {
+          const response: ApiResponse = {
+            success: false,
+            error: {
+              code: err.code,
+              messageEn: err.messageEn,
+              messageHi: err.messageHi,
+            },
+          };
+          return reply.status(err.statusCode).send(response);
+        }
+        throw err;
+      }
+    }
+  );
 };
+

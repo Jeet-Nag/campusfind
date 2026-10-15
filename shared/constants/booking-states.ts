@@ -83,3 +83,18 @@ export function canTransition(
   // Admin can perform all valid transitions
   return true;
 }
+
+/**
+ * Canonical active-booking statuses that represent an active commitment
+ * or pending assigned offer for a provider, preventing them from receiving
+ * or claiming additional jobs.
+ */
+export const ACTIVE_BOOKING_STATUSES: readonly BookingStatus[] = [
+  'PROVIDER_ASSIGNED',
+  'PROVIDER_ACCEPTED',
+  'PROVIDER_ON_THE_WAY',
+  'SERVICE_STARTED',
+  'SERVICE_COMPLETED',
+  'PAYMENT_PENDING',
+  'PAYMENT_COLLECTED',
+] as const;

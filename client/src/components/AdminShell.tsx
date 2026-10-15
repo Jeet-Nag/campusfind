@@ -17,9 +17,11 @@ import {
   FileTextIcon,
   RefreshIcon,
   ChevronRightIcon,
+  UsersIcon,
 } from './icons';
 import { AdminProvidersView } from './AdminProvidersView';
 import { AdminBookingsView } from './AdminBookingsView';
+import { AdminUsersView } from './AdminUsersView';
 
 export function AdminShell() {
   const user = currentUser.value;
@@ -156,6 +158,17 @@ export function AdminShell() {
           >
             <span>{t('admin.bookings')}</span>
           </button>
+
+          <button
+            onClick={() => setAdminTab('users')}
+            class={`min-h-[48px] px-4 py-3 text-sm font-semibold border-b-2 transition-colors flex items-center gap-2 ${
+              activeTab === 'users'
+                ? 'border-brand text-brand'
+                : 'border-transparent text-text-sub hover:text-text-main hover:border-border'
+            }`}
+          >
+            <span>{t('admin.users')}</span>
+          </button>
         </div>
       </nav>
 
@@ -228,7 +241,7 @@ export function AdminShell() {
               <h3 class="text-sm font-bold text-text-main uppercase tracking-wider mb-3">
                 {t('admin.quick_nav')}
               </h3>
-              <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
                 {/* Providers Navigation Card */}
                 <div class="bg-surface border border-border rounded-lg p-5 shadow-xs flex flex-col justify-between">
                   <div>
@@ -276,6 +289,30 @@ export function AdminShell() {
                     </button>
                   </div>
                 </div>
+
+                {/* Users Navigation Card */}
+                <div class="bg-surface border border-border rounded-lg p-5 shadow-xs flex flex-col justify-between">
+                  <div>
+                    <div class="w-10 h-10 rounded-lg bg-purple-50 text-purple-700 flex items-center justify-center mb-3">
+                      <UsersIcon size={22} />
+                    </div>
+                    <h4 class="text-base font-bold text-text-main">
+                      {t('admin.users')}
+                    </h4>
+                    <p class="text-sm text-text-sub mt-1">
+                      {t('admin.manage_users_desc')}
+                    </p>
+                  </div>
+                  <div class="mt-4 pt-3 border-t border-border/50">
+                    <button
+                      onClick={() => setAdminTab('users')}
+                      class="min-h-[48px] w-full px-4 py-2 bg-background hover:bg-slate-100 active:bg-slate-200 rounded-lg text-sm font-semibold text-brand flex items-center justify-between border border-border transition-colors"
+                    >
+                      <span>{t('admin.view_module')}</span>
+                      <ChevronRightIcon size={18} />
+                    </button>
+                  </div>
+                </div>
               </div>
             </div>
           </div>
@@ -289,6 +326,11 @@ export function AdminShell() {
         {/* Tab 3: Bookings Management View */}
         {!loading && activeTab === 'bookings' && (
           <AdminBookingsView />
+        )}
+
+        {/* Tab 4: User Management View */}
+        {!loading && activeTab === 'users' && (
+          <AdminUsersView />
         )}
       </main>
     </div>

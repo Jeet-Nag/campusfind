@@ -5,6 +5,7 @@ import {
   BookingStatus,
   CHANDIL_LOCALITIES,
   canTransition,
+  ACTIVE_BOOKING_STATUSES,
 } from '@shared';
 
 const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -732,13 +733,14 @@ export class AdminBookingService {
         );
       }
 
-      // 5. Verify provider profile exists and is available
+      // 5. Verify provider profile exists, is verified, and is available
       const profileRes = await client.query<{
         category_id: string;
         service_area: string;
         is_available: boolean;
+        verification_status: string;
       }>(
-        'SELECT category_id, service_area, is_available FROM provider_profiles WHERE user_id = $1',
+        'SELECT category_id, service_area, is_available, verification_status FROM provider_profiles WHERE user_id = $1 FOR UPDATE',
         [providerId]
       );
 
@@ -753,6 +755,16 @@ export class AdminBookingService {
       }
 
       const profile = profileRes.rows[0];
+
+      if (profile.verification_status !== 'VERIFIED') {
+        await client.query('ROLLBACK');
+        throw new AdminBookingError(
+          'PROVIDER_NOT_VERIFIED',
+          'Cannot assign provider whose verification is not approved.',
+          'उस मिस्त्री को काम नहीं सौंपा जा सकता जिसका सत्यापन स्वीकृत नहीं है।',
+          400
+        );
+      }
 
       if (!profile.is_available) {
         await client.query('ROLLBACK');
@@ -778,7 +790,7 @@ export class AdminBookingService {
       const activeBookingsRes = await client.query<{ id: string; status: string }>(
         `SELECT id, status FROM bookings
          WHERE provider_id = $1
-           AND status IN ('PROVIDER_ACCEPTED', 'PROVIDER_ON_THE_WAY', 'SERVICE_STARTED', 'PAYMENT_PENDING')
+           AND status IN ('PROVIDER_ASSIGNED', 'PROVIDER_ACCEPTED', 'PROVIDER_ON_THE_WAY', 'SERVICE_STARTED', 'SERVICE_COMPLETED', 'PAYMENT_PENDING', 'PAYMENT_COLLECTED')
          LIMIT 1`,
         [providerId]
       );
