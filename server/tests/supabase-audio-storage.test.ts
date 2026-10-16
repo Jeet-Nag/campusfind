@@ -96,6 +96,35 @@ async function runSupabaseStorageTests() {
     '1.8 Driver instantiated with trailing slash sanitizes URL and returns null for local path'
   );
 
+  // 1.5 Authentication Header Format: Modern sb_secret_ vs Legacy eyJ JWT
+  const modernKey = 'sb_secret_staging_test_abcdef123456';
+  let modernHeadersCaptured: Headers | null = null;
+  const modernDriver = new SupabaseStorageDriver(
+    { url: 'https://test-project.supabase.co', serviceRoleKey: modernKey, bucketName: 'chandil-staging-audio' },
+    async (_input, init) => {
+      modernHeadersCaptured = new Headers(init?.headers);
+      return new Response(JSON.stringify({ Key: 'audio/test.webm' }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    }
+  );
+  await modernDriver.save('test.webm', Buffer.from('test'), 'audio/webm');
+  testAssert(modernHeadersCaptured !== null, '1.9 Modern driver fetch invoked');
+  testAssert(modernHeadersCaptured!.get('apikey') === modernKey, '1.10 Modern sb_secret_ key sends apikey header');
+  testAssert(modernHeadersCaptured!.get('authorization') === null, '1.11 Modern sb_secret_ key does NOT send Authorization Bearer header');
+
+  const legacyJwtKey = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJyb2xlIjoic2VydmljZV9yb2xlIn0.signature';
+  let legacyHeadersCaptured: Headers | null = null;
+  const legacyDriver = new SupabaseStorageDriver(
+    { url: 'https://test-project.supabase.co', serviceRoleKey: legacyJwtKey, bucketName: 'chandil-staging-audio' },
+    async (_input, init) => {
+      legacyHeadersCaptured = new Headers(init?.headers);
+      return new Response(JSON.stringify({ Key: 'audio/test.webm' }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    }
+  );
+  await legacyDriver.save('test.webm', Buffer.from('test'), 'audio/webm');
+  testAssert(legacyHeadersCaptured !== null, '1.12 Legacy driver fetch invoked');
+  testAssert(legacyHeadersCaptured!.get('apikey') === legacyJwtKey, '1.13 Legacy JWT key sends apikey header');
+  testAssert(legacyHeadersCaptured!.get('authorization') === `Bearer ${legacyJwtKey}`, '1.14 Legacy JWT key sends Authorization Bearer header');
+
   // -------------------------------------------------------------
   // PART 2: Mock Fetch Client & Driver Unit Operations
   // -------------------------------------------------------------
@@ -111,9 +140,9 @@ async function runSupabaseStorageTests() {
     const method = (init?.method || 'GET').toUpperCase();
     const headers = new Headers(init?.headers);
 
-    // Verify Authorization header
-    const authHeader = headers.get('authorization');
-    if (authHeader !== `Bearer ${testSecretKey}`) {
+    // Verify apikey header
+    const apiKeyHeader = headers.get('apikey');
+    if (apiKeyHeader !== testSecretKey) {
       return new Response(JSON.stringify({ error: 'Unauthorized', message: 'Invalid API key' }), {
         status: 401,
         headers: { 'Content-Type': 'application/json' },

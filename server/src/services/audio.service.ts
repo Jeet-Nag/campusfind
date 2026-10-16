@@ -258,6 +258,21 @@ export class SupabaseStorageDriver implements AudioStorageDriver {
     return msg.replace(new RegExp(escaped, 'g'), '[REDACTED]');
   }
 
+  private getAuthHeaders(): Record<string, string> {
+    const headers: Record<string, string> = {
+      apikey: this.serviceRoleKey,
+    };
+    if (this.isLegacyJwt(this.serviceRoleKey)) {
+      headers['Authorization'] = `Bearer ${this.serviceRoleKey}`;
+    }
+    return headers;
+  }
+
+  private isLegacyJwt(key: string): boolean {
+    const parts = key.trim().split('.');
+    return parts.length === 3 && parts[0].startsWith('eyJ');
+  }
+
   public async save(filename: string, buffer: Buffer, mimeType: string): Promise<void> {
     const fetchFn = this.customFetch || fetch;
     const endpoint = `${this.url}/storage/v1/object/${this.bucketName}/audio/${filename}`;
@@ -265,7 +280,7 @@ export class SupabaseStorageDriver implements AudioStorageDriver {
     const res = await fetchFn(endpoint, {
       method: 'POST',
       headers: {
-        Authorization: `Bearer ${this.serviceRoleKey}`,
+        ...this.getAuthHeaders(),
         'Content-Type': mimeType,
         'x-upsert': 'true',
       },
@@ -297,7 +312,7 @@ export class SupabaseStorageDriver implements AudioStorageDriver {
     const res = await fetchFn(endpoint, {
       method: 'GET',
       headers: {
-        Authorization: `Bearer ${this.serviceRoleKey}`,
+        ...this.getAuthHeaders(),
       },
     });
 
@@ -385,7 +400,7 @@ export class SupabaseStorageDriver implements AudioStorageDriver {
       await fetchFn(endpoint, {
         method: 'DELETE',
         headers: {
-          Authorization: `Bearer ${this.serviceRoleKey}`,
+          ...this.getAuthHeaders(),
           'Content-Type': 'application/json',
         },
         body: JSON.stringify({
