@@ -1,5 +1,4 @@
 import { FastifyInstance, FastifyPluginAsync } from 'fastify';
-import fs from 'fs';
 import { db } from '../db';
 import { authenticate } from '../middleware/auth';
 import { audioService } from '../services/audio.service';
@@ -26,8 +25,7 @@ export const audioRoutes: FastifyPluginAsync = async (app: FastifyInstance) => {
       const { filename } = request.params;
 
       // 1. Path traversal and filename safety check
-      const filePath = audioService.getAudioFilePath(filename);
-      if (!filePath) {
+      if (!/^[a-f0-9-]+\.(webm|ogg|wav|mp4)$/i.test(filename)) {
         const response: ApiResponse = {
           success: false,
           error: {
@@ -120,38 +118,65 @@ export const audioRoutes: FastifyPluginAsync = async (app: FastifyInstance) => {
         return reply.status(403).send(response);
       }
 
-      // 4. Content Type & Headers
-      let contentType = 'audio/webm';
-      if (filename.endsWith('.wav')) contentType = 'audio/wav';
-      else if (filename.endsWith('.ogg')) contentType = 'audio/ogg';
-      else if (filename.endsWith('.mp4')) contentType = 'audio/mp4';
+      // 4. Retrieve audio from storage driver
+      let audioFile;
+      try {
+        audioFile = await audioService.getAudioFile(filename);
+      } catch (err: any) {
+        request.log.error({ err, filename }, 'Error retrieving audio file from storage');
+        const response: ApiResponse = {
+          success: false,
+          error: {
+            code: 'STORAGE_ERROR',
+            messageEn: 'Failed to retrieve audio file.',
+            messageHi: 'ऑडियो फ़ाइल प्राप्त करने में विफल।',
+          },
+        };
+        return reply.status(500).send(response);
+      }
 
-      const stat = fs.statSync(filePath);
-      const range = request.headers.range;
+      if (!audioFile) {
+        const response: ApiResponse = {
+          success: false,
+          error: {
+            code: 'AUDIO_NOT_FOUND',
+            messageEn: 'Audio file not found.',
+            messageHi: 'ऑडियो फ़ाइल नहीं मिली।',
+          },
+        };
+        return reply.status(404).send(response);
+      }
 
-      reply.header('Content-Type', contentType);
+      // 5. Content Type & Headers
+      reply.header('Content-Type', audioFile.contentType);
       reply.header('Accept-Ranges', 'bytes');
 
-      // 5. HTTP Range Request Handling (206 Partial Content)
+      // 6. HTTP Range Request Handling (206 Partial Content)
+      const range = request.headers.range;
       if (range) {
         const parts = range.replace(/bytes=/, '').split('-');
         const start = parseInt(parts[0], 10);
-        const end = parts[1] ? parseInt(parts[1], 10) : stat.size - 1;
+        const end = parts[1] ? parseInt(parts[1], 10) : audioFile.contentLength - 1;
 
-        if (isNaN(start) || start >= stat.size || end >= stat.size || start > end) {
-          reply.header('Content-Range', `bytes */${stat.size}`);
+        if (
+          isNaN(start) ||
+          start >= audioFile.contentLength ||
+          end >= audioFile.contentLength ||
+          start > end
+        ) {
+          reply.header('Content-Range', `bytes */${audioFile.contentLength}`);
           return reply.status(416).send();
         }
 
         const chunksize = end - start + 1;
         reply.status(206);
-        reply.header('Content-Range', `bytes ${start}-${end}/${stat.size}`);
+        reply.header('Content-Range', `bytes ${start}-${end}/${audioFile.contentLength}`);
         reply.header('Content-Length', chunksize);
-        return reply.send(fs.createReadStream(filePath, { start, end }));
+        return reply.send(audioFile.buffer.subarray(start, end + 1));
       }
 
-      reply.header('Content-Length', stat.size);
-      return reply.send(fs.createReadStream(filePath));
+      reply.header('Content-Length', audioFile.contentLength);
+      return reply.send(audioFile.buffer);
     }
   );
 };

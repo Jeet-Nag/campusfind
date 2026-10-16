@@ -38,12 +38,14 @@
     "test:passkey-origin": "tsx tests/passkey-origin-verification.test.ts",
     "test:passkey-frontend": "tsx tests/passkey-frontend.test.ts",
     "test:api-routing": "tsx tests/client-api-routing.test.ts",
+    "test:r2": "tsx tests/r2-audio-storage.test.ts",
     "db:migrate": "tsx src/db/migrator.ts",
     "db:verify": "tsx tests/db-verification.test.ts",
     "db:staging:preflight": "tsx scripts/staging-db-preflight.ts",
     "db:staging:migrate": "tsx scripts/run-staging-migrations.ts"
   },
   "dependencies": {
+    "@aws-sdk/client-s3": "^3.1152.0",
     "@fastify/cors": "^10.0.2",
     "@fastify/jwt": "^10.2.2",
     "@fastify/static": "^10.1.5",
