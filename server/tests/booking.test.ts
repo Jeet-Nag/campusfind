@@ -702,6 +702,136 @@ async function runBookingTests() {
   );
   assert(dbTamperB.rows[0]?.is_test === true, 'Database booking row remains is_test === true inherited from users table');
 
+  console.log('\n--- 10. Robust Audio Data-URI Parsing & Codec Preservation ---');
+
+  // Realistic WebM-like binary fixture:
+  // Starts with standard EBML header signature 0x1A 0x45 0xDF 0xA3, followed by 1024 bytes of simulated audio
+  const webmHeader = Buffer.from([0x1A, 0x45, 0xDF, 0xA3, 0x01, 0x00, 0x00, 0x1F, 0x42, 0x86, 0x81, 0x01, 0x42, 0xF7, 0x81, 0x01]);
+  const webmBody = Buffer.alloc(1024);
+  for (let i = 0; i < 1024; i++) {
+    webmBody[i] = (i * 31 + 17) % 256;
+  }
+  const realisticWebmFixture = Buffer.concat([webmHeader, webmBody]); // 1040 bytes
+  const fixtureBase64 = realisticWebmFixture.toString('base64');
+
+  // Case 10.1: data:audio/webm;codecs=opus;base64,...
+  const codecUriPayload = `data:audio/webm;codecs=opus;base64,${fixtureBase64}`;
+  const savedCodecAudio = await audioService.saveAudioBase64(codecUriPayload);
+  assert(typeof savedCodecAudio.audioUrl === 'string' && savedCodecAudio.audioUrl.startsWith('/api/audio/'), '10.1 Saved audio URL is valid for codec data URI');
+  assert(savedCodecAudio.filename.endsWith('.webm'), '10.1 Saved filename extension is .webm');
+  assert(savedCodecAudio.byteSize === realisticWebmFixture.length, '10.1 Byte size metadata matches exact fixture length (1040 bytes)');
+
+  const diskCodecPath = audioService.getAudioFilePath(savedCodecAudio.filename);
+  assert(diskCodecPath !== null && fs.existsSync(diskCodecPath), '10.1 Audio file exists on disk');
+  const diskCodecBytes = fs.readFileSync(diskCodecPath!);
+  assert(diskCodecBytes.equals(realisticWebmFixture), '10.1 Stored file bytes exactly match original decoded WebM fixture bytes');
+  await audioService.deleteAudioFile(savedCodecAudio.filename);
+
+  // Case 10.2: Standard data:audio/webm;base64,... URI
+  const stdUriPayload = `data:audio/webm;base64,${fixtureBase64}`;
+  const savedStdAudio = await audioService.saveAudioBase64(stdUriPayload);
+  assert(savedStdAudio.byteSize === realisticWebmFixture.length, '10.2 Standard data URI byte size matches exact fixture length');
+  const diskStdPath = audioService.getAudioFilePath(savedStdAudio.filename);
+  const diskStdBytes = fs.readFileSync(diskStdPath!);
+  assert(diskStdBytes.equals(realisticWebmFixture), '10.2 Standard data URI stored file bytes exactly match original decoded fixture');
+  await audioService.deleteAudioFile(savedStdAudio.filename);
+
+  // Case 10.3: Raw Base64 input format
+  const savedRawAudio = await audioService.saveAudioBase64(fixtureBase64, 'audio/webm');
+  assert(savedRawAudio.byteSize === realisticWebmFixture.length, '10.3 Raw base64 input byte size matches exact fixture length');
+  const diskRawPath = audioService.getAudioFilePath(savedRawAudio.filename);
+  const diskRawBytes = fs.readFileSync(diskRawPath!);
+  assert(diskRawBytes.equals(realisticWebmFixture), '10.3 Raw base64 stored file bytes exactly match original decoded fixture');
+  await audioService.deleteAudioFile(savedRawAudio.filename);
+
+  // Case 10.4: Malformed data URIs and invalid Base64 payloads
+  // 10.4a: Non-audio media type rejected
+  let caughtNonAudio = false;
+  try {
+    await audioService.saveAudioBase64(`data:text/html;base64,${fixtureBase64}`);
+  } catch (err: any) {
+    caughtNonAudio = err.message.includes('only audio data URIs are permitted');
+  }
+  assert(caughtNonAudio, '10.4a Non-audio data URI (data:text/html...) is rejected');
+
+  // 10.4b: Missing comma separator rejected
+  let caughtNoComma = false;
+  try {
+    await audioService.saveAudioBase64(`data:audio/webm;base64${fixtureBase64}`);
+  } catch (err: any) {
+    caughtNoComma = err.message.includes('missing comma separator');
+  }
+  assert(caughtNoComma, '10.4b Malformed data URI (missing comma) is rejected');
+
+  // 10.4c: Invalid Base64 characters in payload rejected
+  let caughtInvalidChars = false;
+  try {
+    await audioService.saveAudioBase64('data:audio/webm;codecs=opus;base64,!!!invalid--base64==');
+  } catch (err: any) {
+    caughtInvalidChars = err.message.includes('Invalid Base64 audio encoding');
+  }
+  assert(caughtInvalidChars, '10.4c Malformed Base64 payload containing illegal characters is rejected');
+
+  // 10.4d: Unsupported audio format rejected
+  let caughtUnsupportedAudio = false;
+  try {
+    await audioService.saveAudioBase64(`data:audio/flac;base64,${fixtureBase64}`);
+  } catch (err: any) {
+    caughtUnsupportedAudio = err.message.includes('Unsupported audio format');
+  }
+  assert(caughtUnsupportedAudio, '10.4d Unsupported audio subtype (audio/flac) is rejected');
+
+  // Case 10.5: End-to-end booking creation with codecs=opus Data URI via app.inject
+  const e2eKey = `test-codec-e2e-${Date.now()}`;
+  const resCodecBooking = await app.inject({
+    method: 'POST',
+    url: '/api/bookings',
+    headers: {
+      authorization: `Bearer ${tokenA}`,
+      'content-type': 'application/json',
+    },
+    payload: {
+      idempotencyKey: e2eKey,
+      categoryId: 'electrician',
+      areaLocality: 'chandil-bazar',
+      textDescription: 'E2E booking with codecs=opus voice note',
+      audioBase64: codecUriPayload,
+      audioDurationSeconds: 7,
+    },
+  });
+  assert(resCodecBooking.statusCode === 201, '10.5 Booking creation with codecs=opus data URI returns HTTP 201');
+  const codecBookingBody = resCodecBooking.json() as ApiResponse<Booking>;
+  assert(typeof codecBookingBody.data?.audioUrl === 'string', '10.5 Booking returned valid audioUrl');
+
+  const e2eFilename = codecBookingBody.data!.audioUrl!.replace('/api/audio/', '');
+  const e2eFilePath = audioService.getAudioFilePath(e2eFilename);
+  assert(e2eFilePath !== null && fs.existsSync(e2eFilePath), '10.5 Booking audio file exists on disk');
+  const e2eDiskBytes = fs.readFileSync(e2eFilePath!);
+  assert(e2eDiskBytes.equals(realisticWebmFixture), '10.5 E2E stored audio bytes exactly match original fixture (not truncated)');
+
+  // Stream back audio via GET /api/audio/:filename
+  const streamCodecRes = await app.inject({
+    method: 'GET',
+    url: codecBookingBody.data!.audioUrl!,
+    headers: { authorization: `Bearer ${tokenA}` },
+  });
+  assert(streamCodecRes.statusCode === 200, '10.5 Authenticated audio stream returns HTTP 200');
+  assert(streamCodecRes.headers['content-type'] === 'audio/webm', '10.5 Content-type is audio/webm');
+  assert(streamCodecRes.rawPayload.equals(realisticWebmFixture), '10.5 Streamed bytes match original fixture exactly');
+
+  // Clean up e2e booking and audio file
+  await pool.query('DELETE FROM bookings WHERE idempotency_key = $1', [e2eKey]);
+  await audioService.deleteAudioFile(e2eFilename);
+
+  // Case 10.6: Reproduce original failure mechanism with legacy regex
+  const legacyRegex = /^data:audio\/\w+;base64,/;
+  const legacyCleaned = codecUriPayload.replace(legacyRegex, '');
+  const legacyBuffer = Buffer.from(legacyCleaned, 'base64');
+  assert(legacyCleaned.startsWith('data:audio/webm;codecs=opus;base64,'), '10.6 Legacy regex failed to strip codecs=opus prefix');
+  assert(legacyBuffer.length === 15, '10.6 Legacy parser decodes exactly 15 bytes due to premature padding stop at opus=');
+  assert(!legacyBuffer.equals(realisticWebmFixture), '10.6 Legacy parser corrupted and truncated the audio fixture');
+  assert(diskCodecBytes.length === 1040, '10.6 Robust parser preserves complete 1040 bytes instead of 15 bytes');
+
   // Clean up b1 audio file from disk
   if (b1.audioUrl) {
     const b1Filename = b1.audioUrl.replace('/api/audio/', '');
