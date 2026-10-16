@@ -20,6 +20,7 @@ interface DbBookingRow {
   final_amount: string | number | null;
   payment_method: string;
   payment_collected: boolean;
+  is_test?: boolean;
   created_at: Date;
   accepted_at: Date | null;
   started_at: Date | null;
@@ -44,6 +45,7 @@ function mapBookingRow(row: DbBookingRow): Booking {
     finalAmount: row.final_amount !== null ? parseFloat(String(row.final_amount)) : null,
     paymentMethod: 'CASH',
     paymentCollected: row.payment_collected,
+    isTest: Boolean(row.is_test),
     createdAt: row.created_at.toISOString(),
     acceptedAt: row.accepted_at ? row.accepted_at.toISOString() : null,
     startedAt: row.started_at ? row.started_at.toISOString() : null,
@@ -310,6 +312,13 @@ export const bookingRoutes: FastifyPluginAsync = async (app: FastifyInstance) =>
     try {
       await client.query('BEGIN');
 
+      // 7.1 Fetch customer's server-side is_test flag directly from DB (never trust client)
+      const userRes = await client.query<{ is_test: boolean }>(
+        'SELECT is_test FROM users WHERE id = $1',
+        [customerId]
+      );
+      const isTest = userRes.rows.length > 0 ? Boolean(userRes.rows[0].is_test) : false;
+
       const insertQuery = `
         INSERT INTO bookings (
           idempotency_key,
@@ -323,9 +332,10 @@ export const bookingRoutes: FastifyPluginAsync = async (app: FastifyInstance) =>
           status,
           visiting_fee,
           payment_method,
-          payment_collected
+          payment_collected,
+          is_test
         ) VALUES (
-          $1, $2, $3, $4, $5, $6, $7, $8, 'SERVICE_REQUESTED', $9, 'CASH', false
+          $1, $2, $3, $4, $5, $6, $7, $8, 'SERVICE_REQUESTED', $9, 'CASH', false, $10
         ) RETURNING *;
       `;
 
@@ -339,6 +349,7 @@ export const bookingRoutes: FastifyPluginAsync = async (app: FastifyInstance) =>
         trimmedLocality,
         trimmedLandmark,
         visitingFee,
+        isTest,
       ];
 
       const bookingResult = await client.query<DbBookingRow>(insertQuery, insertValues);

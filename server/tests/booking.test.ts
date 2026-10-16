@@ -584,6 +584,124 @@ async function runBookingTests() {
     assert(Boolean(loc.id && loc.nameEn && loc.nameHi && loc.pincode), `Locality ${loc.id} has complete bilingual metadata`);
   }
 
+  console.log('\n--- 9. Server-Side is_test Flag Inheritance and Tamper Resistance ---');
+
+  // Case 9.1: Normal customer (users.is_test = false) creates booking -> bookings.is_test = false
+  await pool.query('UPDATE users SET is_test = false WHERE id = $1', [userAId]);
+  const normalIdempKey = `test-normal-is-test-${Date.now()}`;
+  const resNormal = await app.inject({
+    method: 'POST',
+    url: '/api/bookings',
+    headers: {
+      authorization: `Bearer ${tokenA}`,
+      'content-type': 'application/json',
+    },
+    payload: {
+      idempotencyKey: normalIdempKey,
+      categoryId: 'electrician',
+      areaLocality: 'chandil-bazar',
+      textDescription: 'Normal customer booking with default is_test = false',
+    },
+  });
+
+  assert(resNormal.statusCode === 201, 'Normal booking creation returns HTTP 201');
+  const normalBody = resNormal.json() as ApiResponse<Booking>;
+  assert(normalBody.success === true, 'Normal booking creation succeeded');
+  assert(normalBody.data?.isTest === false, 'Normal booking response returns isTest === false');
+
+  const dbNormal = await pool.query<{ is_test: boolean }>(
+    'SELECT is_test FROM bookings WHERE id = $1',
+    [normalBody.data?.id]
+  );
+  assert(dbNormal.rows[0]?.is_test === false, 'Database booking row has is_test === false for normal customer');
+
+  // Case 9.2: Test customer (users.is_test = true) creates booking -> bookings.is_test = true
+  await pool.query('UPDATE users SET is_test = true WHERE id = $1', [userAId]);
+  const testIdempKey = `test-flagged-is-test-${Date.now()}`;
+  const resTest = await app.inject({
+    method: 'POST',
+    url: '/api/bookings',
+    headers: {
+      authorization: `Bearer ${tokenA}`,
+      'content-type': 'application/json',
+    },
+    payload: {
+      idempotencyKey: testIdempKey,
+      categoryId: 'electrician',
+      areaLocality: 'station-colony',
+      textDescription: 'Flagged test customer booking inheriting is_test = true',
+    },
+  });
+
+  assert(resTest.statusCode === 201, 'Test customer booking creation returns HTTP 201');
+  const testBody = resTest.json() as ApiResponse<Booking>;
+  assert(testBody.success === true, 'Test customer booking creation succeeded');
+  assert(testBody.data?.isTest === true, 'Test customer booking response returns isTest === true');
+
+  const dbTest = await pool.query<{ is_test: boolean }>(
+    'SELECT is_test FROM bookings WHERE id = $1',
+    [testBody.data?.id]
+  );
+  assert(dbTest.rows[0]?.is_test === true, 'Database booking row has is_test === true inherited from users table');
+
+  // Case 9.3: Client tampering attempt A: Normal customer sends { is_test: true, isTest: true }
+  await pool.query('UPDATE users SET is_test = false WHERE id = $1', [userAId]);
+  const tamperKeyA = `test-tamper-a-${Date.now()}`;
+  const resTamperA = await app.inject({
+    method: 'POST',
+    url: '/api/bookings',
+    headers: {
+      authorization: `Bearer ${tokenA}`,
+      'content-type': 'application/json',
+    },
+    payload: {
+      idempotencyKey: tamperKeyA,
+      categoryId: 'plumber',
+      areaLocality: 'chowka',
+      textDescription: 'Normal customer attempting to inject is_test = true',
+      is_test: true,
+      isTest: true,
+    },
+  });
+
+  assert(resTamperA.statusCode === 201, 'Tamper attempt A returns HTTP 201');
+  const tamperBodyA = resTamperA.json() as ApiResponse<Booking>;
+  assert(tamperBodyA.data?.isTest === false, 'Tamper attempt A response rejects client-supplied isTest and forces false');
+  const dbTamperA = await pool.query<{ is_test: boolean }>(
+    'SELECT is_test FROM bookings WHERE id = $1',
+    [tamperBodyA.data?.id]
+  );
+  assert(dbTamperA.rows[0]?.is_test === false, 'Database booking row remains is_test === false despite client payload');
+
+  // Case 9.4: Client tampering attempt B: Test customer sends { is_test: false, isTest: false }
+  await pool.query('UPDATE users SET is_test = true WHERE id = $1', [userAId]);
+  const tamperKeyB = `test-tamper-b-${Date.now()}`;
+  const resTamperB = await app.inject({
+    method: 'POST',
+    url: '/api/bookings',
+    headers: {
+      authorization: `Bearer ${tokenA}`,
+      'content-type': 'application/json',
+    },
+    payload: {
+      idempotencyKey: tamperKeyB,
+      categoryId: 'plumber',
+      areaLocality: 'chowka',
+      textDescription: 'Test customer attempting to clear is_test via client payload',
+      is_test: false,
+      isTest: false,
+    },
+  });
+
+  assert(resTamperB.statusCode === 201, 'Tamper attempt B returns HTTP 201');
+  const tamperBodyB = resTamperB.json() as ApiResponse<Booking>;
+  assert(tamperBodyB.data?.isTest === true, 'Tamper attempt B response rejects client-supplied isTest and enforces true');
+  const dbTamperB = await pool.query<{ is_test: boolean }>(
+    'SELECT is_test FROM bookings WHERE id = $1',
+    [tamperBodyB.data?.id]
+  );
+  assert(dbTamperB.rows[0]?.is_test === true, 'Database booking row remains is_test === true inherited from users table');
+
   // Clean up b1 audio file from disk
   if (b1.audioUrl) {
     const b1Filename = b1.audioUrl.replace('/api/audio/', '');
