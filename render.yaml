@@ -1,0 +1,23 @@
+services:
+  - type: web
+    name: campusfind
+    runtime: node
+    plan: free
+    buildCommand: npm run build
+    startCommand: npm run start
+    healthCheckPath: /health
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: HOST
+        value: 0.0.0.0
+      - key: DATABASE_SSL
+        value: "true"
+      - key: DATABASE_URL
+        sync: false
+      - key: JWT_SECRET
+        generateValue: true
+      - key: EXPECTED_ORIGIN
+        sync: false
+      - key: CORS_ORIGIN
+        sync: false

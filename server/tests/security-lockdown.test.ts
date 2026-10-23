@@ -483,8 +483,9 @@ async function runSecurityLockdownTests() {
   testAssert(checkAuthOptionsRateLimit(testIp, 2, 60000) === true, '24.4 Resetting rate limits clears throttle window');
 
   // Fill limit for fake IP to verify route 429 response
-  for (let i = 0; i < 35; i++) {
-    checkAuthOptionsRateLimit('203.0.113.99', 30, 60000);
+  const routeLimit = process.env.NODE_ENV === 'test' ? 1000 : 30;
+  for (let i = 0; i <= routeLimit; i++) {
+    checkAuthOptionsRateLimit('203.0.113.99');
   }
   const rateLimitRes = await app.inject({
     method: 'POST',

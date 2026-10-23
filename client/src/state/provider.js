@@ -4,6 +4,17 @@ import { currentLanguage, t } from './language';
 export const providerJobs = signal([]);
 export const isProviderJobsLoading = signal(false);
 export const providerJobsError = signal(null);
+// Phase 16: Zero-Cost Auto-Refresh configuration and status
+export const DEFAULT_PROVIDER_POLL_INTERVAL_MS = 30000; // 30 seconds
+export const MIN_PROVIDER_POLL_INTERVAL_MS = 30000; // 30 seconds
+export const MAX_PROVIDER_POLL_INTERVAL_MS = 60000; // 60 seconds
+export const providerPollIntervalMs = signal(DEFAULT_PROVIDER_POLL_INTERVAL_MS);
+export const isProviderJobsAutoRefreshing = signal(false);
+export function setProviderPollInterval(ms) {
+    if (typeof ms !== 'number' || isNaN(ms))
+        return;
+    providerPollIntervalMs.value = Math.max(MIN_PROVIDER_POLL_INTERVAL_MS, Math.min(MAX_PROVIDER_POLL_INTERVAL_MS, ms));
+}
 export const selectedJobId = signal(null);
 export const activeJobDetail = signal(null);
 export const isJobDetailLoading = signal(false);
@@ -86,18 +97,44 @@ export async function toggleJobAudio(audioUrl) {
         jobAudioError.value = t('provider.audio_playback_error');
     }
 }
-export async function fetchProviderJobs() {
+let inFlightFetchController = null;
+export async function fetchProviderJobs(options) {
     const token = authToken.value;
     if (!token)
         return;
-    isProviderJobsLoading.value = true;
-    providerJobsError.value = null;
+    const isSilent = Boolean(options?.silent);
+    // Prevent overlapping in-flight requests:
+    // If a background silent poll triggers while another request is in progress, skip it.
+    if (isSilent && inFlightFetchController !== null) {
+        return;
+    }
+    // If a manual or explicit refresh is requested while a background poll is running,
+    // abort the background poll to prioritize the manual user action.
+    if (!isSilent && inFlightFetchController !== null) {
+        try {
+            inFlightFetchController.abort();
+        }
+        catch {
+            // Ignore abort errors
+        }
+        inFlightFetchController = null;
+    }
+    const controller = new AbortController();
+    inFlightFetchController = controller;
+    if (isSilent) {
+        isProviderJobsAutoRefreshing.value = true;
+    }
+    else {
+        isProviderJobsLoading.value = true;
+        providerJobsError.value = null;
+    }
     try {
         const res = await fetch('/api/provider/jobs', {
             method: 'GET',
             headers: {
                 Authorization: `Bearer ${token}`,
             },
+            signal: controller.signal,
         });
         if (res.status === 401) {
             await logout();
@@ -105,19 +142,39 @@ export async function fetchProviderJobs() {
         }
         const body = await res.json();
         if (!res.ok || !body.success) {
-            providerJobsError.value =
-                currentLanguage.value === 'hi'
-                    ? (body.error?.messageHi || 'उपलब्ध काम लोड करने में असमर्थ।')
-                    : (body.error?.messageEn || 'Unable to load available jobs.');
+            if (!isSilent) {
+                providerJobsError.value =
+                    currentLanguage.value === 'hi'
+                        ? (body.error?.messageHi || 'उपलब्ध काम लोड करने में असमर्थ।')
+                        : (body.error?.messageEn || 'Unable to load available jobs.');
+            }
             return;
         }
         providerJobs.value = body.data || [];
+        if (isSilent) {
+            // Clear stale error banner upon successful background poll
+            providerJobsError.value = null;
+        }
     }
-    catch {
-        providerJobsError.value = t('provider.load_error');
+    catch (err) {
+        if (err?.name === 'AbortError') {
+            return;
+        }
+        if (!isSilent) {
+            providerJobsError.value = t('provider.load_error');
+        }
+        // Silent mode: preserve existing providerJobs.value without showing disruptive error banners
     }
     finally {
-        isProviderJobsLoading.value = false;
+        if (inFlightFetchController === controller) {
+            inFlightFetchController = null;
+        }
+        if (isSilent) {
+            isProviderJobsAutoRefreshing.value = false;
+        }
+        else {
+            isProviderJobsLoading.value = false;
+        }
     }
 }
 export async function fetchJobDetail(jobId) {
@@ -409,6 +466,6 @@ export function refreshCurrentJob() {
         fetchJobDetail(selectedJobId.value);
     }
 }
-export function refreshProviderJobs() {
-    fetchProviderJobs();
+export function refreshProviderJobs(options) {
+    return fetchProviderJobs(options);
 }

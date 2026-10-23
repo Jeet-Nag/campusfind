@@ -1,0 +1,19 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <rect width="512" height="512" rx="112" fill="#0F172A"/>
+  <!-- Pediment roof -->
+  <polygon points="256,100 110,180 402,180" fill="#FFFFFF"/>
+  <rect x="100" y="180" width="312" height="24" rx="4" fill="#FFFFFF"/>
+  <!-- University Columns -->
+  <rect x="140" y="210" width="28" height="130" rx="4" fill="#FFFFFF"/>
+  <rect x="210" y="210" width="28" height="130" rx="4" fill="#FFFFFF"/>
+  <rect x="274" y="210" width="28" height="130" rx="4" fill="#FFFFFF"/>
+  <rect x="344" y="210" width="28" height="130" rx="4" fill="#FFFFFF"/>
+  <!-- Steps -->
+  <rect x="110" y="340" width="292" height="24" rx="4" fill="#FFFFFF"/>
+  <rect x="90" y="364" width="332" height="24" rx="4" fill="#FFFFFF"/>
+  <!-- Pediment circle accent -->
+  <circle cx="256" cy="150" r="16" fill="#3B82F6"/>
+  <!-- Search lens accent -->
+  <circle cx="340" cy="310" r="50" fill="none" stroke="#3B82F6" stroke-width="20"/>
+  <line x1="375" y1="345" x2="420" y2="390" stroke="#3B82F6" stroke-width="20" stroke-linecap="round"/>
+</svg>

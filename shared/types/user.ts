@@ -7,6 +7,8 @@ export type WorkerVerificationStatus = 'PENDING_VERIFICATION' | 'VERIFIED' | 'RE
 export interface User {
   id: string;
   phone: string;
+  email?: string | null;
+  studentId?: string | null;
   role: UserRole;
   fullName: string | null;
   preferredLanguage: SupportedLanguage;

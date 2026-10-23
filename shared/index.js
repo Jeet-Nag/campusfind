@@ -2,6 +2,8 @@ export * from './types/user';
 export * from './types/service';
 export * from './types/booking';
 export * from './types/api';
+export * from './types/beta';
+export * from './types/campus';
 export * from './constants/booking-states';
 export * from './constants/localities';
 export * from './constants/categories';

@@ -7,6 +7,21 @@ export const providerJobs = signal<ProviderJob[]>([]);
 export const isProviderJobsLoading = signal<boolean>(false);
 export const providerJobsError = signal<string | null>(null);
 
+// Phase 16: Zero-Cost Auto-Refresh configuration and status
+export const DEFAULT_PROVIDER_POLL_INTERVAL_MS = 30000; // 30 seconds
+export const MIN_PROVIDER_POLL_INTERVAL_MS = 30000; // 30 seconds
+export const MAX_PROVIDER_POLL_INTERVAL_MS = 60000; // 60 seconds
+export const providerPollIntervalMs = signal<number>(DEFAULT_PROVIDER_POLL_INTERVAL_MS);
+export const isProviderJobsAutoRefreshing = signal<boolean>(false);
+
+export function setProviderPollInterval(ms: number): void {
+  if (typeof ms !== 'number' || isNaN(ms)) return;
+  providerPollIntervalMs.value = Math.max(
+    MIN_PROVIDER_POLL_INTERVAL_MS,
+    Math.min(MAX_PROVIDER_POLL_INTERVAL_MS, ms)
+  );
+}
+
 export const selectedJobId = signal<string | null>(null);
 export const activeJobDetail = signal<ProviderJob | null>(null);
 export const isJobDetailLoading = signal<boolean>(false);
@@ -105,12 +120,44 @@ export async function toggleJobAudio(audioUrl: string): Promise<void> {
   }
 }
 
-export async function fetchProviderJobs(): Promise<void> {
+export interface FetchProviderJobsOptions {
+  silent?: boolean;
+}
+
+let inFlightFetchController: AbortController | null = null;
+
+export async function fetchProviderJobs(options?: FetchProviderJobsOptions): Promise<void> {
   const token = authToken.value;
   if (!token) return;
 
-  isProviderJobsLoading.value = true;
-  providerJobsError.value = null;
+  const isSilent = Boolean(options?.silent);
+
+  // Prevent overlapping in-flight requests:
+  // If a background silent poll triggers while another request is in progress, skip it.
+  if (isSilent && inFlightFetchController !== null) {
+    return;
+  }
+
+  // If a manual or explicit refresh is requested while a background poll is running,
+  // abort the background poll to prioritize the manual user action.
+  if (!isSilent && inFlightFetchController !== null) {
+    try {
+      inFlightFetchController.abort();
+    } catch {
+      // Ignore abort errors
+    }
+    inFlightFetchController = null;
+  }
+
+  const controller = new AbortController();
+  inFlightFetchController = controller;
+
+  if (isSilent) {
+    isProviderJobsAutoRefreshing.value = true;
+  } else {
+    isProviderJobsLoading.value = true;
+    providerJobsError.value = null;
+  }
 
   try {
     const res = await fetch('/api/provider/jobs', {
@@ -118,6 +165,7 @@ export async function fetchProviderJobs(): Promise<void> {
       headers: {
         Authorization: `Bearer ${token}`,
       },
+      signal: controller.signal,
     });
 
     if (res.status === 401) {
@@ -128,18 +176,37 @@ export async function fetchProviderJobs(): Promise<void> {
     const body: ApiResponse<ProviderJob[]> = await res.json();
 
     if (!res.ok || !body.success) {
-      providerJobsError.value =
-        currentLanguage.value === 'hi'
-          ? (body.error?.messageHi || 'उपलब्ध काम लोड करने में असमर्थ।')
-          : (body.error?.messageEn || 'Unable to load available jobs.');
+      if (!isSilent) {
+        providerJobsError.value =
+          currentLanguage.value === 'hi'
+            ? (body.error?.messageHi || 'उपलब्ध काम लोड करने में असमर्थ।')
+            : (body.error?.messageEn || 'Unable to load available jobs.');
+      }
       return;
     }
 
     providerJobs.value = body.data || [];
-  } catch {
-    providerJobsError.value = t('provider.load_error');
+    if (isSilent) {
+      // Clear stale error banner upon successful background poll
+      providerJobsError.value = null;
+    }
+  } catch (err: any) {
+    if (err?.name === 'AbortError') {
+      return;
+    }
+    if (!isSilent) {
+      providerJobsError.value = t('provider.load_error');
+    }
+    // Silent mode: preserve existing providerJobs.value without showing disruptive error banners
   } finally {
-    isProviderJobsLoading.value = false;
+    if (inFlightFetchController === controller) {
+      inFlightFetchController = null;
+    }
+    if (isSilent) {
+      isProviderJobsAutoRefreshing.value = false;
+    } else {
+      isProviderJobsLoading.value = false;
+    }
   }
 }
 
@@ -458,6 +525,6 @@ export function refreshCurrentJob(): void {
   }
 }
 
-export function refreshProviderJobs(): void {
-  fetchProviderJobs();
+export function refreshProviderJobs(options?: FetchProviderJobsOptions): Promise<void> {
+  return fetchProviderJobs(options);
 }

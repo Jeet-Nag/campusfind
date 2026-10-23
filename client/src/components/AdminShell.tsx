@@ -22,6 +22,8 @@ import {
 import { AdminProvidersView } from './AdminProvidersView';
 import { AdminBookingsView } from './AdminBookingsView';
 import { AdminUsersView } from './AdminUsersView';
+import { AdminReleasesView } from './AdminReleasesView';
+import { AdminFeedbackView } from './AdminFeedbackView';
 
 export function AdminShell() {
   const user = currentUser.value;
@@ -169,6 +171,39 @@ export function AdminShell() {
           >
             <span>{t('admin.users')}</span>
           </button>
+
+          <button
+            onClick={() => setAdminTab('releases')}
+            class={`min-h-[48px] px-4 py-3 text-sm font-semibold border-b-2 transition-colors flex items-center gap-2 ${
+              activeTab === 'releases'
+                ? 'border-brand text-brand'
+                : 'border-transparent text-text-sub hover:text-text-main hover:border-border'
+            }`}
+          >
+            <span>{t('beta.admin_releases_tab')}</span>
+          </button>
+
+          <button
+            onClick={() => setAdminTab('feedback')}
+            class={`min-h-[48px] px-4 py-3 text-sm font-semibold border-b-2 transition-colors flex items-center gap-2 ${
+              activeTab === 'feedback'
+                ? 'border-brand text-brand'
+                : 'border-transparent text-text-sub hover:text-text-main hover:border-border'
+            }`}
+          >
+            <span>{t('beta.admin_feedback_tab')}</span>
+          </button>
+
+          <a
+            href="/beta"
+            target="_blank"
+            rel="noopener noreferrer"
+            class="min-h-[48px] px-3 py-3 text-xs font-semibold text-text-sub hover:text-brand flex items-center gap-1 ml-auto"
+            title="Open Public Beta Portal in new tab"
+          >
+            <span>Beta Portal</span>
+            <span aria-hidden="true">&rarr;</span>
+          </a>
         </div>
       </nav>
 
@@ -331,6 +366,16 @@ export function AdminShell() {
         {/* Tab 4: User Management View */}
         {!loading && activeTab === 'users' && (
           <AdminUsersView />
+        )}
+
+        {/* Tab 5: Release Management View */}
+        {!loading && activeTab === 'releases' && (
+          <AdminReleasesView />
+        )}
+
+        {/* Tab 6: Feedback Moderation View */}
+        {!loading && activeTab === 'feedback' && (
+          <AdminFeedbackView />
         )}
       </main>
     </div>

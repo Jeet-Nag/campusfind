@@ -25,17 +25,24 @@ export default defineConfig({
       input: {
         main: path.resolve(__dirname, 'index.html'),
         admin: path.resolve(__dirname, 'admin.html'),
+        beta: path.resolve(__dirname, 'beta.html'),
       },
       output: {
         entryFileNames: (chunkInfo) => {
           if (chunkInfo.name === 'admin') {
             return 'assets/admin-[hash].js';
           }
+          if (chunkInfo.name === 'beta') {
+            return 'assets/beta-[hash].js';
+          }
           return 'assets/[name]-[hash].js';
         },
         chunkFileNames: (chunkInfo) => {
           if (chunkInfo.name.includes('admin')) {
             return 'assets/admin-[name]-[hash].js';
+          }
+          if (chunkInfo.name.includes('beta')) {
+            return 'assets/beta-[name]-[hash].js';
           }
           return 'assets/[name]-[hash].js';
         },

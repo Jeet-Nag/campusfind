@@ -16,6 +16,11 @@ import { providerRoutes } from './routes/provider.routes';
 import { adminRoutes } from './routes/admin.routes';
 import { configRoutes } from './routes/config.routes';
 import { workerRoutes } from './routes/worker.routes';
+import { betaRoutes } from './routes/beta.routes';
+import { betaAdminRoutes } from './routes/beta-admin.routes';
+import { studentAuthRoutes } from './routes/student-auth.routes';
+import { campusItemsRoutes } from './routes/campus-items.routes';
+import fastifyMultipart from '@fastify/multipart';
 import { ApiResponse } from '@shared';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -81,7 +86,9 @@ export async function buildApp(options?: BuildAppOptions): Promise<FastifyInstan
   const app = Fastify({
     logger: currentEnv !== 'test',
     bodyLimit: 25 * 1024 * 1024,
+    trustProxy: true,
   });
+
 
   // CORS configuration
   await app.register(cors, {
@@ -102,18 +109,29 @@ export async function buildApp(options?: BuildAppOptions): Promise<FastifyInstan
     }
   });
 
+  // Fastify Multipart configuration for streamed file uploads (e.g. APKs, screenshots)
+  await app.register(fastifyMultipart, {
+    limits: {
+      fileSize: 50 * 1024 * 1024,
+    },
+  });
+
   // JWT configuration
   await app.register(fastifyJwt, {
     secret: currentJwtSecret,
   });
 
-  // Register Auth, Category, Booking, Audio, Provider, Admin, Worker, Config and RBAC routes
+  // Register Auth, Category, Booking, Audio, Provider, Admin, Beta, Worker, Config and RBAC routes
   await app.register(authRoutes, { prefix: '/api/auth' });
+  await app.register(studentAuthRoutes, { prefix: '/api/auth' });
+  await app.register(campusItemsRoutes, { prefix: '/api/campus' });
   await app.register(categoryRoutes, { prefix: '/api/categories' });
   await app.register(bookingRoutes, { prefix: '/api/bookings' });
   await app.register(audioRoutes, { prefix: '/api/audio' });
   await app.register(providerRoutes, { prefix: '/api/provider' });
   await app.register(adminRoutes, { prefix: '/api/admin' });
+  await app.register(betaRoutes, { prefix: '/api/beta' });
+  await app.register(betaAdminRoutes, { prefix: '/api/admin/beta' });
   await app.register(workerRoutes, { prefix: '/api' });
   await app.register(configRoutes, { prefix: '/api/config' });
   await app.register(rbacTestRoutes);
@@ -143,6 +161,16 @@ export async function buildApp(options?: BuildAppOptions): Promise<FastifyInstan
 
   const clientDistPath = resolveClientDistPath(options?.clientDistPath);
 
+  const uploadsDir = path.resolve(process.cwd(), 'uploads');
+  if (!fs.existsSync(uploadsDir)) {
+    fs.mkdirSync(uploadsDir, { recursive: true });
+  }
+  await app.register(fastifyStatic, {
+    root: uploadsDir,
+    prefix: '/uploads/',
+    decorateReply: false,
+  });
+
   // Register static asset serving
   await app.register(fastifyStatic, {
     root: clientDistPath,
@@ -151,7 +179,7 @@ export async function buildApp(options?: BuildAppOptions): Promise<FastifyInstan
     serveDotFiles: true,
     setHeaders: (reply, filePath) => {
       const normalizedPath = filePath.replace(/\\/g, '/');
-      if (normalizedPath.endsWith('index.html') || normalizedPath.endsWith('admin.html')) {
+      if (normalizedPath.endsWith('index.html') || normalizedPath.endsWith('admin.html') || normalizedPath.endsWith('beta.html')) {
         reply.header('Cache-Control', 'no-cache, no-store, must-revalidate');
         reply.header('Pragma', 'no-cache');
         reply.header('Expires', '0');
@@ -195,6 +223,63 @@ export async function buildApp(options?: BuildAppOptions): Promise<FastifyInstan
   app.get('/admin/', serveAdminHtml);
   app.get('/admin/*', serveAdminHtml);
 
+  // Dedicated Beta Testing Portal routes
+  const serveBetaHtml = async (_request: any, reply: any) => {
+    const betaPath = path.join(clientDistPath, 'beta.html');
+    if (fs.existsSync(betaPath)) {
+      reply.type('text/html; charset=utf-8');
+      reply.header('Cache-Control', 'no-cache, no-store, must-revalidate');
+      reply.header('Pragma', 'no-cache');
+      reply.header('Expires', '0');
+      return reply.sendFile('beta.html');
+    }
+    const indexPath = path.join(clientDistPath, 'index.html');
+    if (fs.existsSync(indexPath)) {
+      reply.type('text/html; charset=utf-8');
+      reply.header('Cache-Control', 'no-cache, no-store, must-revalidate');
+      reply.header('Pragma', 'no-cache');
+      reply.header('Expires', '0');
+      return reply.sendFile('index.html');
+    }
+    return reply.status(404).send({
+      success: false,
+      error: {
+        code: 'NOT_FOUND',
+        messageEn: 'Beta portal is not built or beta.html is missing.',
+        messageHi: 'बीटा पोर्टल उपलब्ध नहीं है।',
+      },
+    });
+  };
+
+  app.get('/beta', serveBetaHtml);
+  app.get('/beta/', serveBetaHtml);
+  app.get('/beta/*', serveBetaHtml);
+  app.get('/download', serveBetaHtml);
+  app.get('/download/*', serveBetaHtml);
+  app.get('/feedback', serveBetaHtml);
+  app.get('/feedback/*', serveBetaHtml);
+
+  // Dynamic Static Assets Serving (handles Vite rebuilds & hash changes without requiring server reboot)
+  app.get('/assets/*', async (request, reply) => {
+    const rawUrl = request.raw.url || request.url;
+    const pathname = rawUrl.split('?')[0].replace(/^\/assets\//, '');
+    const cleanRelPath = path.normalize(pathname).replace(/^(\.\.[\/\\])+/, '');
+    const diskPath = path.join(clientDistPath, 'assets', cleanRelPath);
+    if (fs.existsSync(diskPath) && fs.statSync(diskPath).isFile()) {
+      reply.header('Cache-Control', 'public, max-age=31536000, immutable');
+      return reply.sendFile(path.join('assets', cleanRelPath));
+    }
+    const response: ApiResponse = {
+      success: false,
+      error: {
+        code: 'NOT_FOUND',
+        messageEn: 'Static asset not found.',
+        messageHi: 'फाइल नहीं मिली।',
+      },
+    };
+    return reply.status(404).send(response);
+  });
+
   // SPA fallback and strict route exclusion handling
   app.setNotFoundHandler(async (request, reply) => {
     const rawUrl = request.raw.url || request.url;
@@ -208,6 +293,18 @@ export async function buildApp(options?: BuildAppOptions): Promise<FastifyInstan
           code: 'NOT_FOUND',
           messageEn: 'Resource not found.',
           messageHi: 'संसाधन नहीं मिला।',
+        },
+      };
+      return reply.status(404).send(response);
+    }
+
+    if (pathname.startsWith('/uploads/') || pathname === '/uploads') {
+      const response: ApiResponse = {
+        success: false,
+        error: {
+          code: 'NOT_FOUND',
+          messageEn: 'Upload file not found.',
+          messageHi: 'फाइल नहीं मिली।',
         },
       };
       return reply.status(404).send(response);
@@ -249,7 +346,7 @@ export async function buildApp(options?: BuildAppOptions): Promise<FastifyInstan
     }
 
     // 5. If request has a file extension (e.g. .js, .css, .png, etc.) and was not found on disk, do not serve HTML
-    if (path.extname(pathname) !== '' && pathname !== '/index.html' && pathname !== '/admin.html') {
+    if (path.extname(pathname) !== '' && pathname !== '/index.html' && pathname !== '/admin.html' && pathname !== '/beta.html') {
       const response: ApiResponse = {
         success: false,
         error: {
@@ -261,7 +358,7 @@ export async function buildApp(options?: BuildAppOptions): Promise<FastifyInstan
       return reply.status(404).send(response);
     }
 
-    // 6. SPA fallback: serve admin.html for /admin navigation, index.html for other frontend routes
+    // 6. SPA fallback: serve admin.html for /admin, beta.html for /beta and beta subpaths, index.html for other frontend routes
     if (pathname.startsWith('/admin')) {
       const adminPath = path.join(clientDistPath, 'admin.html');
       if (fs.existsSync(adminPath)) {
@@ -270,6 +367,23 @@ export async function buildApp(options?: BuildAppOptions): Promise<FastifyInstan
         reply.header('Pragma', 'no-cache');
         reply.header('Expires', '0');
         return reply.sendFile('admin.html');
+      }
+    }
+
+    if (
+      pathname.startsWith('/beta') ||
+      pathname === '/download' ||
+      pathname.startsWith('/download/') ||
+      pathname === '/feedback' ||
+      pathname.startsWith('/feedback/')
+    ) {
+      const betaPath = path.join(clientDistPath, 'beta.html');
+      if (fs.existsSync(betaPath)) {
+        reply.type('text/html; charset=utf-8');
+        reply.header('Cache-Control', 'no-cache, no-store, must-revalidate');
+        reply.header('Pragma', 'no-cache');
+        reply.header('Expires', '0');
+        return reply.sendFile('beta.html');
       }
     }
 

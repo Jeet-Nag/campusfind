@@ -1,133 +1,154 @@
 import { useEffect } from 'preact/hooks';
-import { currentLanguage, isLanguageChosen, selectLanguage } from './state/language';
-import { isAuthenticated, currentUser, selectedOnboardingRole } from './state/auth';
-import { workerStatus, fetchWorkerStatus } from './state/worker';
-import { bookingStep } from './state/booking';
-import { selectedJobId } from './state/provider';
-import { LoginScreen } from './components/LoginScreen';
-import { CustomerHome } from './components/CustomerHome';
-import { BookingForm } from './components/BookingForm';
-import { BookingReview } from './components/BookingReview';
-import { BookingConfirmed } from './components/BookingConfirmed';
-import { BookingHistory } from './components/BookingHistory';
-import { BookingDetailScreen } from './components/BookingDetailScreen';
-import { ProviderHome } from './components/ProviderHome';
-import { ProviderJobDetailScreen } from './components/ProviderJobDetailScreen';
-import { WorkerSetupScreen } from './components/WorkerSetupScreen';
-import { WorkerPendingScreen } from './components/WorkerPendingScreen';
-import { WorkerRejectedScreen } from './components/WorkerRejectedScreen';
-import { logout } from './state/auth';
-import { t } from './state/language';
+import {
+  currentView,
+  selectedItemId,
+  globalNotification,
+  navigateTo,
+  fetchCampusItems,
+} from './state/campus';
+import { authToken, currentUser, isAuthenticated } from './state/auth';
+import { Navbar } from './components/Navbar';
+import { HomeScreen } from './components/HomeScreen';
+import { BrowseScreen } from './components/BrowseScreen';
+import { ReportFormScreen } from './components/ReportFormScreen';
+import { ItemDetailScreen } from './components/ItemDetailScreen';
+import { MyReportsScreen } from './components/MyReportsScreen';
+import { AuthScreen } from './components/AuthScreen';
 
 export function App() {
-  // Sync worker onboarding/verification status when authenticated as customer
+  // Sync URL route on initial load and handle browser back/forward
   useEffect(() => {
-    if (isAuthenticated.value && currentUser.value?.role === 'customer') {
-      fetchWorkerStatus();
+    // Initial data fetch
+    fetchCampusItems();
+
+    // Verify authenticated session against /api/auth/me if token exists
+    if (authToken.value) {
+      fetch('/api/auth/me', {
+        headers: { Authorization: `Bearer ${authToken.value}` },
+      })
+        .then(async (res) => {
+          if (res.status === 401) {
+            authToken.value = null;
+            currentUser.value = null;
+            return;
+          }
+          const data = await res.json();
+          if (data.success && data.data?.user) {
+            currentUser.value = data.data.user;
+          }
+        })
+        .catch(() => {});
     }
-  }, [isAuthenticated.value, currentUser.value?.id]);
 
-  // 1. First-launch Language Selection Screen
-  // (Strict requirement: do NOT silently assume Hindi or English on fresh install)
-  if (!isLanguageChosen.value) {
-    return (
-      <div class="min-h-screen flex items-center justify-center p-4 bg-background">
-        <div class="w-full max-w-md bg-surface border border-border rounded-lg p-6 shadow-sm">
-          <div class="text-center mb-6">
-            <h1 class="text-xl font-bold text-brand">Chandil Home Services</h1>
-            <h2 class="text-lg font-semibold text-text-main mt-2">
-              Choose your language / भाषा चुनें
-            </h2>
-          </div>
+    // Parse initial URL
+    const pathname = window.location.pathname;
+    if (pathname.startsWith('/item/')) {
+      const id = pathname.replace('/item/', '');
+      navigateTo('item-detail', id);
+    } else if (pathname === '/browse') {
+      currentView.value = 'browse';
+    } else if (pathname === '/report-lost') {
+      currentView.value = 'report-lost';
+    } else if (pathname === '/report-found') {
+      currentView.value = 'report-found';
+    } else if (pathname === '/my-reports') {
+      currentView.value = 'my-reports';
+    } else if (pathname === '/auth') {
+      currentView.value = 'auth';
+    } else {
+      currentView.value = 'home';
+    }
 
-          <div class="space-y-4">
-            <button
-              onClick={() => selectLanguage('en')}
-              class="w-full min-h-[56px] flex items-center justify-between px-5 py-4 border-2 border-border hover:border-brand rounded-lg text-left transition-colors bg-white focus:outline-none focus:border-brand"
-            >
-              <div>
-                <div class="text-base font-bold text-text-main">English</div>
-                <div class="text-sm text-text-sub">Continue in English</div>
-              </div>
-              <span class="text-brand font-bold text-lg">→</span>
-            </button>
+    const handlePopState = (e: PopStateEvent) => {
+      if (e.state?.view) {
+        currentView.value = e.state.view;
+        selectedItemId.value = e.state.itemId || null;
+      } else {
+        const path = window.location.pathname;
+        if (path.startsWith('/item/')) {
+          selectedItemId.value = path.replace('/item/', '');
+          currentView.value = 'item-detail';
+        } else if (path === '/browse') {
+          currentView.value = 'browse';
+        } else if (path === '/report-lost') {
+          currentView.value = 'report-lost';
+        } else if (path === '/report-found') {
+          currentView.value = 'report-found';
+        } else if (path === '/my-reports') {
+          currentView.value = 'my-reports';
+        } else if (path === '/auth') {
+          currentView.value = 'auth';
+        } else {
+          currentView.value = 'home';
+        }
+      }
+    };
 
-            <button
-              onClick={() => selectLanguage('hi')}
-              class="w-full min-h-[56px] flex items-center justify-between px-5 py-4 border-2 border-border hover:border-brand rounded-lg text-left transition-colors bg-white focus:outline-none focus:border-brand"
-            >
-              <div>
-                <div class="text-base font-bold text-text-main">हिंदी</div>
-                <div class="text-sm text-text-sub">हिंदी में जारी रखें</div>
-              </div>
-              <span class="text-brand font-bold text-lg">→</span>
-            </button>
-          </div>
-        </div>
-      </div>
-    );
-  }
+    window.addEventListener('popstate', handlePopState);
+    return () => window.removeEventListener('popstate', handlePopState);
+  }, []);
 
-  // 2. Unauthenticated State -> Mobile Login Screen
-  if (!isAuthenticated.value) {
-    return <LoginScreen />;
-  }
+  return (
+    <div class="min-h-screen flex flex-col bg-background text-text-main font-sans antialiased">
+      {/* Global Navigation Bar */}
+      <Navbar />
 
-  // 3. Admin Account Handling on Mobile App (Directs to Web Admin Portal)
-  if (currentUser.value?.role === 'admin') {
-    return (
-      <div class="min-h-screen flex items-center justify-center p-4 bg-background">
-        <div class="w-full max-w-md bg-surface border border-border rounded-lg p-6 shadow-sm text-center">
-          <h2 class="text-lg font-bold text-brand mb-2">Admin Account Detected</h2>
-          <p class="text-sm text-text-sub mb-6">
-            This application is for customers and service providers. Please use the Admin Web Portal on a browser at /admin to manage operations.
-          </p>
-          <button
-            onClick={() => logout()}
-            class="w-full min-h-[48px] px-4 py-3 bg-brand text-white font-medium rounded-lg hover:bg-brand-dark transition-colors"
+      {/* Global Toast Notification */}
+      {globalNotification.value && (
+        <div class="fixed top-20 right-4 z-50 max-w-sm w-full animate-fade-in pointer-events-none">
+          <div
+            class={`pointer-events-auto p-4 rounded-xl shadow-lg border text-xs font-bold flex items-center justify-between gap-3 ${
+              globalNotification.value.type === 'success'
+                ? 'bg-emerald-600 text-white border-emerald-700'
+                : globalNotification.value.type === 'error'
+                ? 'bg-rose-600 text-white border-rose-700'
+                : 'bg-brand text-white border-brand-dark'
+            }`}
           >
-            {t('auth.logout')}
-          </button>
+            <span>
+              {globalNotification.value.type === 'success'
+                ? '✓ '
+                : globalNotification.value.type === 'error'
+                ? '⚠️ '
+                : 'ℹ️ '}
+              {globalNotification.value.message}
+            </span>
+            <button
+              onClick={() => (globalNotification.value = null)}
+              class="text-white/80 hover:text-white font-bold ml-2"
+            >
+              ✕
+            </button>
+          </div>
         </div>
-      </div>
-    );
-  }
+      )}
 
-  // 4. Provider Role Flow
-  if (currentUser.value?.role === 'provider') {
-    if (selectedJobId.value) {
-      return <ProviderJobDetailScreen />;
-    }
-    return <ProviderHome />;
-  }
+      {/* Main Content Area */}
+      <main class="flex-1 max-w-6xl w-full mx-auto px-4 sm:px-6 pt-6 pb-20 md:pb-12">
+        {currentView.value === 'home' && <HomeScreen />}
+        {currentView.value === 'browse' && <BrowseScreen />}
+        {currentView.value === 'report-lost' && <ReportFormScreen initialType="lost" />}
+        {currentView.value === 'report-found' && <ReportFormScreen initialType="found" />}
+        {currentView.value === 'item-detail' && selectedItemId.value && (
+          <ItemDetailScreen itemId={selectedItemId.value} />
+        )}
+        {currentView.value === 'my-reports' && <MyReportsScreen />}
+        {currentView.value === 'auth' && <AuthScreen />}
+      </main>
 
-  // 5. Worker Onboarding State Handling
-  if (workerStatus.value === 'PENDING_VERIFICATION') {
-    return <WorkerPendingScreen />;
-  }
-
-  if (workerStatus.value === 'REJECTED') {
-    return <WorkerRejectedScreen />;
-  }
-
-  if (selectedOnboardingRole.value === 'worker' && workerStatus.value !== 'VERIFIED') {
-    return <WorkerSetupScreen />;
-  }
-
-  // 6. Customer Role Flow (Customer App)
-  switch (bookingStep.value) {
-    case 'details':
-      return <BookingForm />;
-    case 'review':
-      return <BookingReview />;
-    case 'confirmed':
-      return <BookingConfirmed />;
-    case 'history':
-      return <BookingHistory />;
-    case 'status':
-      return <BookingDetailScreen />;
-    case 'home':
-    default:
-      return <CustomerHome />;
-  }
+      {/* Desktop & Tablet Footer */}
+      <footer class="hidden md:block bg-surface border-t border-border mt-auto py-8">
+        <div class="max-w-6xl mx-auto px-4 flex flex-col sm:flex-row items-center justify-between gap-4 text-xs text-text-sub">
+          <div class="flex items-center gap-2">
+            <span class="font-bold text-brand">CampusFind</span>
+            <span>•</span>
+            <span>University Lost & Found Safe Verification Network</span>
+          </div>
+          <div>
+            <span>All student reports are securely stored and verified.</span>
+          </div>
+        </div>
+      </footer>
+    </div>
+  );
 }

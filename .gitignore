@@ -10,9 +10,14 @@ build/
 
 # Environment files
 .env
+.env.*
 .env.local
 .env.*.local
 !.env.example
+
+# Scratch and temporary directories
+scratch/
+apk-portal/
 
 # Local storage and uploads
 uploads/

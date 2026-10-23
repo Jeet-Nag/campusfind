@@ -406,3 +406,82 @@ export function handleSessionExpired(): void {
     ? 'सत्र समाप्त हो गया है। कृपया पुनः लॉगिन करें।'
     : 'Session expired. Please log in again.';
 }
+
+
+export async function studentLogin(emailOrPhone: string, password = 'Password123!'): Promise<boolean> {
+  authLoading.value = true;
+  authError.value = null;
+
+  try {
+    const res = await fetch('/api/auth/login', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ emailOrPhone, password }),
+    });
+
+    const data: ApiResponse<{ token: string; user: User }> = await res.json();
+    if (!res.ok || !data.success || !data.data) {
+      authError.value = data.error?.messageEn || 'Invalid email or password.';
+      return false;
+    }
+
+    const { token, user } = data.data;
+    authToken.value = token;
+    currentUser.value = user;
+
+    try {
+      localStorage.setItem(TOKEN_KEY, token);
+      localStorage.setItem(USER_KEY, JSON.stringify(user));
+    } catch {}
+
+    authError.value = null;
+    return true;
+  } catch {
+    authError.value = 'Network error. Please check your connection.';
+    return false;
+  } finally {
+    authLoading.value = false;
+  }
+}
+
+export async function studentRegister(payload: {
+  fullName: string;
+  email: string;
+  phone?: string;
+  studentId?: string;
+  password?: string;
+}): Promise<boolean> {
+  authLoading.value = true;
+  authError.value = null;
+
+  try {
+    const res = await fetch('/api/auth/register', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+
+    const data: ApiResponse<{ token: string; user: User }> = await res.json();
+    if (!res.ok || !data.success || !data.data) {
+      authError.value = data.error?.messageEn || 'Registration failed.';
+      return false;
+    }
+
+    const { token, user } = data.data;
+    authToken.value = token;
+    currentUser.value = user;
+
+    try {
+      localStorage.setItem(TOKEN_KEY, token);
+      localStorage.setItem(USER_KEY, JSON.stringify(user));
+    } catch {}
+
+    authError.value = null;
+    return true;
+  } catch {
+    authError.value = 'Network error. Please check your connection.';
+    return false;
+  } finally {
+    authLoading.value = false;
+  }
+}

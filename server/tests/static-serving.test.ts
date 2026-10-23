@@ -58,7 +58,7 @@ async function runTests() {
     '1.2 GET / returns Content-Type text/html'
   );
   assert(
-    rootRes.payload.includes('<div id="app"></div>') && rootRes.payload.includes('Chandil Home Services'),
+    rootRes.payload.includes('<div id="app"></div>') && (rootRes.payload.includes('CampusFind') || rootRes.payload.includes('Chandil Home Services')),
     '1.3 GET / returns client index.html document'
   );
   assert(

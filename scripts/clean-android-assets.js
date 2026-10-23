@@ -15,7 +15,7 @@ export function cleanAndroidAssets() {
 
   let removedCount = 0;
 
-  // 1. Remove admin.html from native Android public directory
+  // 1. Remove admin.html and beta.html from native Android public directory
   const adminHtmlPath = path.join(androidPublicDir, 'admin.html');
   if (fs.existsSync(adminHtmlPath)) {
     fs.unlinkSync(adminHtmlPath);
@@ -23,14 +23,22 @@ export function cleanAndroidAssets() {
     removedCount++;
   }
 
-  // 2. Remove any admin chunks and sourcemaps from native assets directory
+  const betaHtmlPath = path.join(androidPublicDir, 'beta.html');
+  if (fs.existsSync(betaHtmlPath)) {
+    fs.unlinkSync(betaHtmlPath);
+    console.log('[Clean Assets] Removed android/app/src/main/assets/public/beta.html');
+    removedCount++;
+  }
+
+  // 2. Remove any admin & beta chunks and sourcemaps from native assets directory
   const assetsDir = path.join(androidPublicDir, 'assets');
   if (fs.existsSync(assetsDir)) {
     const files = fs.readdirSync(assetsDir);
     for (const file of files) {
       const isMap = file.endsWith('.map');
       const isAdminChunk = file.startsWith('admin-') || file.startsWith('admin.');
-      if (isAdminChunk || isMap) {
+      const isBetaChunk = file.startsWith('beta-') || file.startsWith('beta.');
+      if (isAdminChunk || isBetaChunk || isMap) {
         fs.unlinkSync(path.join(assetsDir, file));
         console.log(`[Clean Assets] Removed android asset: ${file}`);
         removedCount++;

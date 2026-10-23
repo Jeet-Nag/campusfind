@@ -23,7 +23,7 @@ export class AuthService {
     if (!pool) return null;
 
     const { rows } = await pool.query<User & { token_version: number; is_active: boolean }>(
-      `SELECT id, phone, role, full_name as "fullName", preferred_language as "preferredLanguage", 
+      `SELECT id, phone, email, student_id as "studentId", role, full_name as "fullName", preferred_language as "preferredLanguage", 
               is_active as "isActive", created_at as "createdAt", updated_at as "updatedAt", token_version
        FROM users WHERE id = $1`,
       [userId]

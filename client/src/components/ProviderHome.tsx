@@ -1,10 +1,14 @@
-import { useEffect, useState } from 'preact/hooks';
+import { useEffect, useState, useRef } from 'preact/hooks';
 import {
   providerJobs,
   isProviderJobsLoading,
   providerJobsError,
   refreshProviderJobs,
   openJobDetail,
+  DEFAULT_PROVIDER_POLL_INTERVAL_MS,
+  MIN_PROVIDER_POLL_INTERVAL_MS,
+  MAX_PROVIDER_POLL_INTERVAL_MS,
+  providerPollIntervalMs,
 } from '../state/provider';
 import { currentUser, logout } from '../state/auth';
 import { categories, fetchCategories } from '../state/categories';
@@ -37,7 +41,11 @@ function formatJobTime(isoString: string, lang: string): string {
   }
 }
 
-export function ProviderHome() {
+export interface ProviderHomeProps {
+  pollIntervalMs?: number;
+}
+
+export function ProviderHome({ pollIntervalMs }: ProviderHomeProps = {}) {
   const lang = currentLanguage.value || 'en';
   const user = currentUser.value;
   const jobs = providerJobs.value;
@@ -45,12 +53,83 @@ export function ProviderHome() {
   const error = providerJobsError.value;
   const [filter, setFilter] = useState<'all' | 'assigned' | 'open'>('all');
 
+  const effectivePollInterval = Math.max(
+    MIN_PROVIDER_POLL_INTERVAL_MS,
+    Math.min(
+      MAX_PROVIDER_POLL_INTERVAL_MS,
+      pollIntervalMs ?? providerPollIntervalMs.value ?? DEFAULT_PROVIDER_POLL_INTERVAL_MS
+    )
+  );
+
+  const resetPollingCycleRef = useRef<(() => void) | null>(null);
+
   useEffect(() => {
     if (categories.value.length === 0) {
       fetchCategories();
     }
+    // Initial fetch on mount
     refreshProviderJobs();
-  }, []);
+
+    let timer: number | null = null;
+
+    const stopPolling = () => {
+      if (timer !== null) {
+        clearInterval(timer);
+        timer = null;
+      }
+    };
+
+    const startPolling = () => {
+      stopPolling();
+      timer = window.setInterval(() => {
+        // Guard with Page Visibility API: poll only while document is visible
+        if (typeof document !== 'undefined' && document.visibilityState !== 'visible') {
+          return;
+        }
+        refreshProviderJobs({ silent: true });
+      }, effectivePollInterval);
+    };
+
+    const handleVisibilityChange = () => {
+      if (typeof document === 'undefined') return;
+      if (document.visibilityState === 'visible') {
+        // Resume immediately when visible and restart polling cycle
+        refreshProviderJobs({ silent: true });
+        startPolling();
+      } else {
+        // Pause polling when hidden/backgrounded
+        stopPolling();
+      }
+    };
+
+    resetPollingCycleRef.current = () => {
+      if (typeof document === 'undefined' || document.visibilityState === 'visible') {
+        startPolling();
+      }
+    };
+
+    // Start polling if foreground/visible
+    if (typeof document === 'undefined' || document.visibilityState === 'visible') {
+      startPolling();
+    }
+
+    if (typeof document !== 'undefined') {
+      document.addEventListener('visibilitychange', handleVisibilityChange);
+    }
+
+    return () => {
+      resetPollingCycleRef.current = null;
+      stopPolling();
+      if (typeof document !== 'undefined') {
+        document.removeEventListener('visibilitychange', handleVisibilityChange);
+      }
+    };
+  }, [effectivePollInterval]);
+
+  const handleManualRefresh = () => {
+    refreshProviderJobs();
+    resetPollingCycleRef.current?.();
+  };
 
   const assignedJobs = jobs.filter((j) => j.status === 'PROVIDER_ASSIGNED');
   const openJobs = jobs.filter((j) => j.status === 'SERVICE_REQUESTED');
@@ -76,7 +155,7 @@ export function ProviderHome() {
 
           <div class="flex items-center space-x-1">
             <button
-              onClick={() => refreshProviderJobs()}
+              onClick={handleManualRefresh}
               disabled={isLoading}
               class="p-2 text-white hover:bg-white/10 rounded-lg min-h-[48px] min-w-[48px] flex items-center justify-center focus:outline-none transition-colors"
               aria-label={t('provider.refresh')}
@@ -219,7 +298,7 @@ export function ProviderHome() {
             </div>
             <button
               type="button"
-              onClick={() => refreshProviderJobs()}
+              onClick={handleManualRefresh}
               class="min-h-[48px] px-6 py-2.5 bg-brand hover:bg-brand-dark text-white rounded-lg font-bold text-xs transition-colors inline-flex items-center space-x-2"
             >
               <RefreshIcon size={16} />
@@ -242,7 +321,7 @@ export function ProviderHome() {
             </div>
             <button
               type="button"
-              onClick={() => refreshProviderJobs()}
+              onClick={handleManualRefresh}
               class="min-h-[48px] px-6 py-2.5 bg-brand hover:bg-brand-dark text-white rounded-lg font-bold text-xs transition-colors inline-flex items-center space-x-2"
             >
               <RefreshIcon size={16} />

@@ -1,75 +1,102 @@
 import { jsx as _jsx, jsxs as _jsxs } from "preact/jsx-runtime";
 import { useEffect } from 'preact/hooks';
-import { isLanguageChosen, selectLanguage } from './state/language';
-import { isAuthenticated, currentUser, selectedOnboardingRole } from './state/auth';
-import { workerStatus, fetchWorkerStatus } from './state/worker';
-import { bookingStep } from './state/booking';
-import { selectedJobId } from './state/provider';
-import { LoginScreen } from './components/LoginScreen';
-import { CustomerHome } from './components/CustomerHome';
-import { BookingForm } from './components/BookingForm';
-import { BookingReview } from './components/BookingReview';
-import { BookingConfirmed } from './components/BookingConfirmed';
-import { BookingHistory } from './components/BookingHistory';
-import { BookingDetailScreen } from './components/BookingDetailScreen';
-import { ProviderHome } from './components/ProviderHome';
-import { ProviderJobDetailScreen } from './components/ProviderJobDetailScreen';
-import { WorkerSetupScreen } from './components/WorkerSetupScreen';
-import { WorkerPendingScreen } from './components/WorkerPendingScreen';
-import { WorkerRejectedScreen } from './components/WorkerRejectedScreen';
-import { logout } from './state/auth';
-import { t } from './state/language';
+import { currentView, selectedItemId, globalNotification, navigateTo, fetchCampusItems, } from './state/campus';
+import { authToken, currentUser } from './state/auth';
+import { Navbar } from './components/Navbar';
+import { HomeScreen } from './components/HomeScreen';
+import { BrowseScreen } from './components/BrowseScreen';
+import { ReportFormScreen } from './components/ReportFormScreen';
+import { ItemDetailScreen } from './components/ItemDetailScreen';
+import { MyReportsScreen } from './components/MyReportsScreen';
+import { AuthScreen } from './components/AuthScreen';
 export function App() {
-    // Sync worker onboarding/verification status when authenticated as customer
+    // Sync URL route on initial load and handle browser back/forward
     useEffect(() => {
-        if (isAuthenticated.value && currentUser.value?.role === 'customer') {
-            fetchWorkerStatus();
+        // Initial data fetch
+        fetchCampusItems();
+        // Verify authenticated session against /api/auth/me if token exists
+        if (authToken.value) {
+            fetch('/api/auth/me', {
+                headers: { Authorization: `Bearer ${authToken.value}` },
+            })
+                .then(async (res) => {
+                if (res.status === 401) {
+                    authToken.value = null;
+                    currentUser.value = null;
+                    return;
+                }
+                const data = await res.json();
+                if (data.success && data.data?.user) {
+                    currentUser.value = data.data.user;
+                }
+            })
+                .catch(() => { });
         }
-    }, [isAuthenticated.value, currentUser.value?.id]);
-    // 1. First-launch Language Selection Screen
-    // (Strict requirement: do NOT silently assume Hindi or English on fresh install)
-    if (!isLanguageChosen.value) {
-        return (_jsx("div", { class: "min-h-screen flex items-center justify-center p-4 bg-background", children: _jsxs("div", { class: "w-full max-w-md bg-surface border border-border rounded-lg p-6 shadow-sm", children: [_jsxs("div", { class: "text-center mb-6", children: [_jsx("h1", { class: "text-xl font-bold text-brand", children: "Chandil Home Services" }), _jsx("h2", { class: "text-lg font-semibold text-text-main mt-2", children: "Choose your language / \u092D\u093E\u0937\u093E \u091A\u0941\u0928\u0947\u0902" })] }), _jsxs("div", { class: "space-y-4", children: [_jsxs("button", { onClick: () => selectLanguage('en'), class: "w-full min-h-[56px] flex items-center justify-between px-5 py-4 border-2 border-border hover:border-brand rounded-lg text-left transition-colors bg-white focus:outline-none focus:border-brand", children: [_jsxs("div", { children: [_jsx("div", { class: "text-base font-bold text-text-main", children: "English" }), _jsx("div", { class: "text-sm text-text-sub", children: "Continue in English" })] }), _jsx("span", { class: "text-brand font-bold text-lg", children: "\u2192" })] }), _jsxs("button", { onClick: () => selectLanguage('hi'), class: "w-full min-h-[56px] flex items-center justify-between px-5 py-4 border-2 border-border hover:border-brand rounded-lg text-left transition-colors bg-white focus:outline-none focus:border-brand", children: [_jsxs("div", { children: [_jsx("div", { class: "text-base font-bold text-text-main", children: "\u0939\u093F\u0902\u0926\u0940" }), _jsx("div", { class: "text-sm text-text-sub", children: "\u0939\u093F\u0902\u0926\u0940 \u092E\u0947\u0902 \u091C\u093E\u0930\u0940 \u0930\u0916\u0947\u0902" })] }), _jsx("span", { class: "text-brand font-bold text-lg", children: "\u2192" })] })] })] }) }));
-    }
-    // 2. Unauthenticated State -> Mobile Login Screen
-    if (!isAuthenticated.value) {
-        return _jsx(LoginScreen, {});
-    }
-    // 3. Admin Account Handling on Mobile App (Directs to Web Admin Portal)
-    if (currentUser.value?.role === 'admin') {
-        return (_jsx("div", { class: "min-h-screen flex items-center justify-center p-4 bg-background", children: _jsxs("div", { class: "w-full max-w-md bg-surface border border-border rounded-lg p-6 shadow-sm text-center", children: [_jsx("h2", { class: "text-lg font-bold text-brand mb-2", children: "Admin Account Detected" }), _jsx("p", { class: "text-sm text-text-sub mb-6", children: "This application is for customers and service providers. Please use the Admin Web Portal on a browser at /admin to manage operations." }), _jsx("button", { onClick: () => logout(), class: "w-full min-h-[48px] px-4 py-3 bg-brand text-white font-medium rounded-lg hover:bg-brand-dark transition-colors", children: t('auth.logout') })] }) }));
-    }
-    // 4. Provider Role Flow
-    if (currentUser.value?.role === 'provider') {
-        if (selectedJobId.value) {
-            return _jsx(ProviderJobDetailScreen, {});
+        // Parse initial URL
+        const pathname = window.location.pathname;
+        if (pathname.startsWith('/item/')) {
+            const id = pathname.replace('/item/', '');
+            navigateTo('item-detail', id);
         }
-        return _jsx(ProviderHome, {});
-    }
-    // 5. Worker Onboarding State Handling
-    if (workerStatus.value === 'PENDING_VERIFICATION') {
-        return _jsx(WorkerPendingScreen, {});
-    }
-    if (workerStatus.value === 'REJECTED') {
-        return _jsx(WorkerRejectedScreen, {});
-    }
-    if (selectedOnboardingRole.value === 'worker' && workerStatus.value !== 'VERIFIED') {
-        return _jsx(WorkerSetupScreen, {});
-    }
-    // 6. Customer Role Flow (Customer App)
-    switch (bookingStep.value) {
-        case 'details':
-            return _jsx(BookingForm, {});
-        case 'review':
-            return _jsx(BookingReview, {});
-        case 'confirmed':
-            return _jsx(BookingConfirmed, {});
-        case 'history':
-            return _jsx(BookingHistory, {});
-        case 'status':
-            return _jsx(BookingDetailScreen, {});
-        case 'home':
-        default:
-            return _jsx(CustomerHome, {});
-    }
+        else if (pathname === '/browse') {
+            currentView.value = 'browse';
+        }
+        else if (pathname === '/report-lost') {
+            currentView.value = 'report-lost';
+        }
+        else if (pathname === '/report-found') {
+            currentView.value = 'report-found';
+        }
+        else if (pathname === '/my-reports') {
+            currentView.value = 'my-reports';
+        }
+        else if (pathname === '/auth') {
+            currentView.value = 'auth';
+        }
+        else {
+            currentView.value = 'home';
+        }
+        const handlePopState = (e) => {
+            if (e.state?.view) {
+                currentView.value = e.state.view;
+                selectedItemId.value = e.state.itemId || null;
+            }
+            else {
+                const path = window.location.pathname;
+                if (path.startsWith('/item/')) {
+                    selectedItemId.value = path.replace('/item/', '');
+                    currentView.value = 'item-detail';
+                }
+                else if (path === '/browse') {
+                    currentView.value = 'browse';
+                }
+                else if (path === '/report-lost') {
+                    currentView.value = 'report-lost';
+                }
+                else if (path === '/report-found') {
+                    currentView.value = 'report-found';
+                }
+                else if (path === '/my-reports') {
+                    currentView.value = 'my-reports';
+                }
+                else if (path === '/auth') {
+                    currentView.value = 'auth';
+                }
+                else {
+                    currentView.value = 'home';
+                }
+            }
+        };
+        window.addEventListener('popstate', handlePopState);
+        return () => window.removeEventListener('popstate', handlePopState);
+    }, []);
+    return (_jsxs("div", { class: "min-h-screen flex flex-col bg-background text-text-main font-sans antialiased", children: [_jsx(Navbar, {}), globalNotification.value && (_jsx("div", { class: "fixed top-20 right-4 z-50 max-w-sm w-full animate-fade-in pointer-events-none", children: _jsxs("div", { class: `pointer-events-auto p-4 rounded-xl shadow-lg border text-xs font-bold flex items-center justify-between gap-3 ${globalNotification.value.type === 'success'
+                        ? 'bg-emerald-600 text-white border-emerald-700'
+                        : globalNotification.value.type === 'error'
+                            ? 'bg-rose-600 text-white border-rose-700'
+                            : 'bg-brand text-white border-brand-dark'}`, children: [_jsxs("span", { children: [globalNotification.value.type === 'success'
+                                    ? '✓ '
+                                    : globalNotification.value.type === 'error'
+                                        ? '⚠️ '
+                                        : 'ℹ️ ', globalNotification.value.message] }), _jsx("button", { onClick: () => (globalNotification.value = null), class: "text-white/80 hover:text-white font-bold ml-2", children: "\u2715" })] }) })), _jsxs("main", { class: "flex-1 max-w-6xl w-full mx-auto px-4 sm:px-6 pt-6 pb-20 md:pb-12", children: [currentView.value === 'home' && _jsx(HomeScreen, {}), currentView.value === 'browse' && _jsx(BrowseScreen, {}), currentView.value === 'report-lost' && _jsx(ReportFormScreen, { initialType: "lost" }), currentView.value === 'report-found' && _jsx(ReportFormScreen, { initialType: "found" }), currentView.value === 'item-detail' && selectedItemId.value && (_jsx(ItemDetailScreen, { itemId: selectedItemId.value })), currentView.value === 'my-reports' && _jsx(MyReportsScreen, {}), currentView.value === 'auth' && _jsx(AuthScreen, {})] }), _jsx("footer", { class: "hidden md:block bg-surface border-t border-border mt-auto py-8", children: _jsxs("div", { class: "max-w-6xl mx-auto px-4 flex flex-col sm:flex-row items-center justify-between gap-4 text-xs text-text-sub", children: [_jsxs("div", { class: "flex items-center gap-2", children: [_jsx("span", { class: "font-bold text-brand", children: "CampusFind" }), _jsx("span", { children: "\u2022" }), _jsx("span", { children: "University Lost & Found Safe Verification Network" })] }), _jsx("div", { children: _jsx("span", { children: "All student reports are securely stored and verified." }) })] }) })] }));
 }

@@ -7,7 +7,7 @@ async function start() {
   try {
     const app = await buildApp();
     await app.listen({ port: env.PORT, host: env.HOST });
-    console.log(`[Server] Chandil Home Services API running at http://${env.HOST}:${env.PORT}`);
+    console.log(`[Server] CampusFind API & Web Portal running at http://${env.HOST}:${env.PORT}`);
     console.log(`[Server] Environment: ${env.NODE_ENV}`);
 
     const handleSignal = async (signal: string) => {
